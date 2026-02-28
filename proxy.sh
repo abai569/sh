@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # 四合一代理管理脚本 (Four-in-one Proxy Manager)
-# 优化版本 - 性能提升 - 本地版本号获取
+# 优化版本 - 性能提升 - 本地版本号获取 - 依赖前置
 # ==============================================================================
 
 # 全局颜色定义
@@ -42,17 +42,34 @@ debug_log() {
 }
 
 # ==============================================================================
+# 基础依赖安装函数
+# ==============================================================================
+install_dependencies() {
+    if ! command -v curl &>/dev/null || ! command -v unzip &>/dev/null || ! command -v openssl &>/dev/null; then
+        echo -e "${C_BLUE}[*] 安装基础依赖...${C_RESET}"
+        if command -v apt-get &>/dev/null; then
+            apt-get update >/dev/null 2>&1
+            apt-get install -y curl unzip wget tar openssl >/dev/null 2>&1
+        elif command -v yum &>/dev/null; then
+            yum install -y curl unzip wget tar openssl >/dev/null 2>&1
+        fi
+        echo -e "${C_GREEN}[✔] 依赖安装完成${C_RESET}"
+    fi
+}
+
+# ==============================================================================
 # 时间同步和时区设置函数
 # ==============================================================================
-
 setup_ntp_sync() {
     echo -e "${C_BLUE}[*] 检查系统时间同步...${C_RESET}"
     
     # 尝试方案1：安装 systemd-timesyncd
     if ! systemctl is-active --quiet systemd-timesyncd; then
         echo "安装 systemd-timesyncd..."
-        apt-get update >/dev/null 2>&1
-        apt-get install -y systemd-timesyncd >/dev/null 2>&1
+        if command -v apt-get &>/dev/null; then
+            apt-get update >/dev/null 2>&1
+            apt-get install -y systemd-timesyncd >/dev/null 2>&1
+        fi
         systemctl start systemd-timesyncd 2>/dev/null
         systemctl enable systemd-timesyncd 2>/dev/null
         sleep 2
@@ -61,7 +78,9 @@ setup_ntp_sync() {
     # 如果 systemd-timesyncd 还是不工作，用 ntpdate 强制同步一次
     if ! timedatectl status 2>/dev/null | grep -q "synchronized: yes"; then
         if ! command -v ntpdate &>/dev/null; then
-            apt-get install -y ntpdate >/dev/null 2>&1
+            if command -v apt-get &>/dev/null; then
+                apt-get install -y ntpdate >/dev/null 2>&1
+            fi
         fi
         ntpdate -u ntp.ubuntu.com 2>/dev/null || ntpdate -u pool.ntp.org 2>/dev/null
     fi
@@ -71,7 +90,7 @@ setup_ntp_sync() {
     timedatectl set-timezone Asia/Shanghai
     
     echo -e "${C_GREEN}[✔] 时间同步完成${C_RESET}"
-    timedatectl status
+    timedatectl status | grep "Local time" || true
 }
 
 # ==============================================================================
@@ -131,21 +150,6 @@ get_xray_version() {
     echo "Unknown"
 }
 
-# 获取本地SS-Rust版本号 (保留函数以兼容旧版检测)
-get_ss_version() {
-    local ss_binary_path="/usr/local/bin/ss-rust"
-    
-    if [[ -f "$ss_binary_path" ]]; then
-        local version
-        version=$("$ss_binary_path" -v 2>/dev/null | head -n 1)
-        if [ -n "$version" ]; then
-            echo "$version"
-            return 0
-        fi
-    fi
-    return 1
-}
-
 # ==============================================================================
 # 统一 Xray 核心安装函数
 # ==============================================================================
@@ -172,7 +176,7 @@ install_xray_core() {
 }
 
 # ==============================================================================
-# 模块 0: Xray Reality - 函数定义（独立服务）
+# 模块 0: VMess+TCP - 函数定义（独立服务）
 # ==============================================================================
 
 m0_log_error() { echo -e "${C_RED}[✖] $1${C_RESET}"; }
@@ -182,11 +186,11 @@ m0_get_public_ip() {
     get_public_ip
 }
 
-m0_restart_xray_reality() {
+m0_restart_xray_vmess_tcp() {
     mkdir -p /etc/systemd/system
-    cat <<'EOF' >/etc/systemd/system/xray-reality.service
+    cat <<'EOF' >/etc/systemd/system/xray-vmesstcp.service
 [Unit]
-Description=Xray Reality Service
+Description=Xray VMess-TCP Service
 After=network.target nss-lookup.target
 
 [Service]
@@ -194,12 +198,12 @@ User=nobody
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
-ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/reality.json
+ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/vmesstcp.json
 Restart=on-failure
 RestartPreventExitStatus=23
 LimitNPROC=10000
 LimitNOFILE=1000000
-RuntimeDirectory=xray-reality
+RuntimeDirectory=xray-vmesstcp
 RuntimeDirectoryMode=0755
 
 [Install]
@@ -207,36 +211,31 @@ WantedBy=multi-user.target
 EOF
 
     systemctl daemon-reload
-    systemctl enable xray-reality >/dev/null 2>&1
-    systemctl restart xray-reality
+    systemctl enable xray-vmesstcp >/dev/null 2>&1
+    systemctl restart xray-vmesstcp
     sleep 2 # 等待服务启动
-    systemctl is-active --quiet xray-reality
+    systemctl is-active --quiet xray-vmesstcp
 }
 
-m0_install_reality() {
-    local xray_config_path="/usr/local/etc/xray/reality.json"
+m0_install_vmess_tcp() {
+    local xray_config_path="/usr/local/etc/xray/vmesstcp.json"
 
     # --- 默认配置 ---
     local port=26200
-    local uuid="0e092eb5-7d41-484c-9c2b-e3a754376d2f"
-    local flow="xtls-rprx-vision"
-    local security="reality"
-    local pbk="bNOXnPALN-eV9MvHqS-1nK0bi9sFfH35qwn7Z6NWZCo"
-    local sid="6e6577"
-    local sni="tesla.com"
-    local fp="ios"
-    local spider="%2F"
+    local uuid="03c50ab2-80bf-40f2-947c-46b9e8f7b603"
     # ----------------
 
     # 检测是否已安装
-    if [[ -f "$xray_config_path" ]] && systemctl is-active --quiet xray-reality 2>/dev/null; then
-        echo -e "${C_YELLOW}检测到 VLESS-Reality 已安装，跳过安装步骤。${C_RESET}"
+    if [[ -f "$xray_config_path" ]] && systemctl is-active --quiet xray-vmesstcp 2>/dev/null; then
+        echo -e "${C_YELLOW}检测到 VMess+TCP 已安装，跳过安装步骤。${C_RESET}"
         local ip
         ip=$(m0_get_public_ip)
         echo -e "${C_YELLOW}默认端口: $port${C_RESET}"
 		echo ""
-        echo -e "${C_GREEN}=== VLESS-Reality 节点链接 ===${C_RESET}"
-        echo "vless://${uuid}@${ip}:${port}?encryption=none&flow=${flow}&security=${security}&sni=${sni}&fp=${fp}&pbk=${pbk}&sid=${sid}&spx=${spider}&type=tcp#VLESS_Reality"
+        echo -e "${C_GREEN}=== VMess+TCP 节点链接 ===${C_RESET}"
+        local json_str="{\"v\":\"2\",\"ps\":\"VMess-TCP\",\"add\":\"${ip}\",\"port\":${port},\"id\":\"${uuid}\",\"aid\":0,\"scy\":\"auto\",\"net\":\"tcp\",\"type\":\"none\",\"host\":\"\",\"path\":\"\",\"tls\":\"\"}"
+        local link="vmess://$(echo -n "$json_str" | base64 -w 0)"
+        echo "$link"
         echo ""
         return 0
     fi
@@ -253,7 +252,7 @@ m0_install_reality() {
     # 显示版本号
     echo "版本号: $(get_xray_version)"
 
-    echo "正在安装 VLESS-Reality..."
+    echo "正在安装 VMess+TCP..."
     mkdir -p "$(dirname "$xray_config_path")"
     cat > "$xray_config_path" <<EOF
 {
@@ -261,22 +260,12 @@ m0_install_reality() {
   "inbounds": [{
     "listen": "::",
     "port": $port,
-    "protocol": "vless",
+    "protocol": "vmess",
     "settings": {
-      "clients": [{"id": "$uuid", "flow": "$flow"}],
-      "decryption": "none"
+      "clients": [{"id": "$uuid", "alterId": 0}]
     },
     "streamSettings": {
-      "network": "tcp",
-      "security": "reality",
-      "realitySettings": {
-        "show": false,
-        "dest": "${sni}:443",
-        "xver": 0,
-        "serverNames": ["$sni"],
-        "privateKey": "-OEfvIM5HGHMqGQ_eCEp8ZLMiR30A8j2Gylfh1Q3bkU",
-        "shortIds": ["$sid"]
-      }
+      "network": "tcp"
     }
   }],
   "outbounds": [{"protocol": "freedom"}]
@@ -284,41 +273,42 @@ m0_install_reality() {
 EOF
     chmod 644 "$xray_config_path"
 
-    if m0_restart_xray_reality; then
+    if m0_restart_xray_vmess_tcp; then
         local ip
         ip=$(m0_get_public_ip)
-        local link="vless://${uuid}@${ip}:${port}?encryption=none&flow=${flow}&security=${security}&sni=${sni}&fp=${fp}&pbk=${pbk}&sid=${sid}&spx=${spider}&type=tcp#VLESS_Reality"
+        local json_str="{\"v\":\"2\",\"ps\":\"VMess-TCP\",\"add\":\"${ip}\",\"port\":${port},\"id\":\"${uuid}\",\"aid\":0,\"scy\":\"auto\",\"net\":\"tcp\",\"type\":\"none\",\"host\":\"\",\"path\":\"\",\"tls\":\"\"}"
+        local link="vmess://$(echo -n "$json_str" | base64 -w 0)"
         mkdir -p /root/four-in-one
-        m0_log_success "VLESS-Reality 安装完成！"
+        m0_log_success "VMess+TCP 安装完成！"
         echo -e "${C_YELLOW}默认端口: $port${C_RESET}"
 		echo ""
-        echo -e "${C_GREEN}=== VLESS-Reality 节点链接 ===${C_RESET}"
+        echo -e "${C_GREEN}=== VMess+TCP 节点链接 ===${C_RESET}"
         echo "$link"
         echo ""
-        echo "$link" > /root/four-in-one/xray_vless_reality_link.txt
+        echo "$link" > /root/four-in-one/xray_vmess_tcp_link.txt
     else
-        m0_log_error "启动失败，请检查日志 (journalctl -u xray-reality)"
+        m0_log_error "启动失败，请检查日志 (journalctl -u xray-vmesstcp)"
     fi
 }
 
 m0_view_info() {
-    if [ -f /root/four-in-one/xray_vless_reality_link.txt ]; then
-        cat /root/four-in-one/xray_vless_reality_link.txt
+    if [ -f /root/four-in-one/xray_vmess_tcp_link.txt ]; then
+        cat /root/four-in-one/xray_vmess_tcp_link.txt
     else
-        m0_log_error "未找到 Reality 链接，请先安装。"
+        m0_log_error "未找到 VMess+TCP 链接，请先安装。"
     fi
 }
 
-module_reality_menu() {
+module_vmess_tcp_menu() {
     while true; do
         clear
-        echo -e "${C_CYAN}=== VLESS-Reality ===${C_RESET}"
-        if systemctl is-active --quiet xray-reality; then
+        echo -e "${C_CYAN}=== VMess+TCP ===${C_RESET}"
+        if systemctl is-active --quiet xray-vmesstcp; then
             echo -e "状态: ${C_GREEN}运行中${C_RESET}"
         else
             echo -e "状态: ${C_RED}未运行${C_RESET}"
         fi
-        echo "1. 安装VLESS-Reality"
+        echo "1. 安装VMess+TCP"
         echo "2. 查看链接"
         echo "3. 重启服务"
         echo "4. 卸载服务"
@@ -327,23 +317,23 @@ module_reality_menu() {
         echo "------------------------"
         read -p "请选择: " choice
         case $choice in
-            1) m0_install_reality; pause_key ;;
+            1) m0_install_vmess_tcp; pause_key ;;
             2) m0_view_info; pause_key ;;
-            3) m0_restart_xray_reality; m0_log_success "已重启"; pause_key ;;
-            4) m0_uninstall_reality; pause_key ;;
-            5) journalctl -u xray-reality -n 20 --no-pager; pause_key ;;
+            3) m0_restart_xray_vmess_tcp; m0_log_success "已重启"; pause_key ;;
+            4) m0_uninstall_vmess_tcp; pause_key ;;
+            5) journalctl -u xray-vmesstcp -n 20 --no-pager; pause_key ;;
             0) return ;;
             *) echo "无效选项"; pause_key ;;
         esac
     done
 }
 
-m0_uninstall_reality() {
-    echo "正在卸载 VLESS-Reality..."
-    systemctl stop xray-reality 2>/dev/null
-    systemctl disable xray-reality 2>/dev/null
-    rm -f /etc/systemd/system/xray-reality.service
-    rm -f /usr/local/etc/xray/reality.json
+m0_uninstall_vmess_tcp() {
+    echo "正在卸载 VMess+TCP..."
+    systemctl stop xray-vmesstcp 2>/dev/null
+    systemctl disable xray-vmesstcp 2>/dev/null
+    rm -f /etc/systemd/system/xray-vmesstcp.service
+    rm -f /usr/local/etc/xray/vmesstcp.json
     systemctl daemon-reload
     m0_log_success "卸载完成"
 }
@@ -510,11 +500,7 @@ module_socks5_menu() {
         echo "------------------------"
         read -p "请选择: " choice
         case $choice in
-            1)
-                m1_install_xray
-                pause_key
-                ;;
-            2)
+            1|2)
                 m1_install_xray
                 pause_key
                 ;;
@@ -529,29 +515,21 @@ module_socks5_menu() {
 }
 
 # ==============================================================================
-# 模块 2: Xray VLESS-Enc (官方核心) - 函数定义（独立服务）
+# 模块 2: VMess+WS - 函数定义（独立服务）
 # ==============================================================================
 
 m2_log_error() { echo -e "${C_RED}[✖] $1${C_RESET}"; }
-m2_log_info() { echo -e "${C_BLUE}[!] $1${C_RESET}"; }
 m2_log_success() { echo -e "${C_GREEN}[✔] $1${C_RESET}"; }
-
-m2_check_xray_version() {
-    local xray_binary_path="/usr/local/bin/xray"
-    [ -f "$xray_binary_path" ] || return 1
-    # 直接假定支持（避免 grep help 误报）
-    return 0
-}
 
 m2_get_public_ip() {
     get_public_ip
 }
 
-m2_restart_xray_vlessenc() {
+m2_restart_xray_vmess_ws() {
     mkdir -p /etc/systemd/system
-    cat <<'EOF' >/etc/systemd/system/xray-vlessenc.service
+    cat <<'EOF' >/etc/systemd/system/xray-vmessws.service
 [Unit]
-Description=Xray VLESS-Enc Service
+Description=Xray VMess-WS Service
 After=network.target nss-lookup.target
 
 [Service]
@@ -559,12 +537,12 @@ User=nobody
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
-ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/vlessenc.json
+ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/vmessws.json
 Restart=on-failure
 RestartPreventExitStatus=23
 LimitNPROC=10000
 LimitNOFILE=1000000
-RuntimeDirectory=xray-vlessenc
+RuntimeDirectory=xray-vmessws
 RuntimeDirectoryMode=0755
 
 [Install]
@@ -572,54 +550,44 @@ WantedBy=multi-user.target
 EOF
 
     systemctl daemon-reload
-    systemctl enable xray-vlessenc >/dev/null 2>&1
-    systemctl restart xray-vlessenc
+    systemctl enable xray-vmessws >/dev/null 2>&1
+    systemctl restart xray-vmessws
     sleep 2 # 等待服务启动
-    systemctl is-active --quiet xray-vlessenc
+    systemctl is-active --quiet xray-vmessws
 }
 
 m2_install_xray() {
-    local xray_config_path="/usr/local/etc/xray/vlessenc.json"
+    local xray_config_path="/usr/local/etc/xray/vmessws.json"
     
     # --- 默认配置 ---
     local port=26201
-    local uuid="0e092eb5-7d41-484c-9c2b-e3a754376d2f"
-    local decryption_config="mlkem768x25519plus.native.600s.6JN17BDd2jpmFfBWQ1eDVrmp3iA0yOdVx3zD7wPuQ3Y"
-    local encryption_config="mlkem768x25519plus.native.0rtt.AVkBW8-SWZDmk50sRAQ9BvrEjG3KZaYNSoK_fyMwz2M"
+    local uuid="03c50ab2-80bf-40f2-947c-46b9e8f7b603"
+    local ws_path="/vmessws"
     # ----------------
 
     # 检测是否已安装
-    if [[ -f "$xray_config_path" ]] && systemctl is-active --quiet xray-vlessenc 2>/dev/null; then
-        echo -e "${C_YELLOW}检测到 VLESS-Enc 已安装，跳过安装步骤。${C_RESET}"
+    if [[ -f "$xray_config_path" ]] && systemctl is-active --quiet xray-vmessws 2>/dev/null; then
+        echo -e "${C_YELLOW}检测到 VMess+WS 已安装，跳过安装步骤。${C_RESET}"
         local ip
         ip=$(m2_get_public_ip)
         echo -e "${C_YELLOW}默认端口: $port${C_RESET}"
 		echo ""
-        echo -e "${C_GREEN}=== VLESS-Enc 节点链接 ===${C_RESET}"
-        local link="vless://${uuid}@${ip}:${port}?encryption=${encryption_config}&flow=xtls-rprx-vision&type=tcp&security=none#VLESS-Enc"
+        echo -e "${C_GREEN}=== VMess+WS 节点链接 ===${C_RESET}"
+        local json_str="{\"v\":\"2\",\"ps\":\"VMess-WS\",\"add\":\"${ip}\",\"port\":${port},\"id\":\"${uuid}\",\"aid\":0,\"scy\":\"auto\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"\",\"path\":\"${ws_path}\",\"tls\":\"\"}"
+        local link="vmess://$(echo -n "$json_str" | base64 -w 0)"
         echo "$link"
         echo ""
         return 0
     fi
     
     # 新安装：显示安装信息
-    echo "正在安装 VLESS-Enc..."
+    echo "正在安装 VMess+WS..."
     
     # 安装 Xray 核心
     if ! install_xray_core; then
         m2_log_error "核心安装失败"
         return 1
     fi
-
-    # 检查版本支持 (已移除过时检测)
-    if ! m2_check_xray_version; then
-        m2_log_error "当前 Xray 版本不支持 VLESS Encryption，请尝试更新。"
-        return 1
-    fi
-
-    # 保存客户端需要的key
-    mkdir -p /root/four-in-one
-    echo "$encryption_config" > /root/four-in-one/xray_encryption_info.txt
 
     # 写入配置
     mkdir -p "$(dirname "$xray_config_path")"
@@ -629,63 +597,68 @@ m2_install_xray() {
     "inbounds": [{
         "listen": "::",
         "port": $port,
-        "protocol": "vless",
+        "protocol": "vmess",
         "settings": {
-            "clients": [{"id": "$uuid", "flow": "xtls-rprx-vision"}],
-            "decryption": "$decryption_config"
+            "clients": [{"id": "$uuid", "alterId": 0}]
         },
-        "streamSettings": { "network": "tcp" }
+        "streamSettings": { 
+            "network": "ws",
+            "wsSettings": {
+                "path": "$ws_path"
+            }
+        }
     }],
     "outbounds": [{ "protocol": "freedom" }]
 }
 EOF
     chmod 644 "$xray_config_path"
     
-    if m2_restart_xray_vlessenc; then
+    if m2_restart_xray_vmess_ws; then
         local ip
         ip=$(m2_get_public_ip)
-        local link="vless://${uuid}@${ip}:${port}?encryption=${encryption_config}&flow=xtls-rprx-vision&type=tcp&security=none#VLESS-Enc"
-        m2_log_success "VLESS-Enc 安装完成！"
+        local json_str="{\"v\":\"2\",\"ps\":\"VMess-WS\",\"add\":\"${ip}\",\"port\":${port},\"id\":\"${uuid}\",\"aid\":0,\"scy\":\"auto\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"\",\"path\":\"${ws_path}\",\"tls\":\"\"}"
+        local link="vmess://$(echo -n "$json_str" | base64 -w 0)"
+        m2_log_success "VMess+WS 安装完成！"
         echo -e "${C_YELLOW}默认端口: $port${C_RESET}"
-        echo -e "\n${C_GREEN}=== VLESS-Enc 节点链接 ===${C_RESET}"
+        echo -e "\n${C_GREEN}=== VMess+WS 节点链接 ===${C_RESET}"
         echo "$link"
         echo ""
         mkdir -p /root/four-in-one
-        echo "$link" > /root/four-in-one/xray_vless_encryption_link.txt
+        echo "$link" > /root/four-in-one/xray_vmess_ws_link.txt
     else
-        m2_log_error "启动失败，请检查日志 (journalctl -u xray-vlessenc)"
+        m2_log_error "启动失败，请检查日志 (journalctl -u xray-vmessws)"
     fi
 }
 
 m2_uninstall_xray() {
-    echo "正在卸载 VLESS-Enc..."
-    systemctl stop xray-vlessenc 2>/dev/null
-    systemctl disable xray-vlessenc 2>/dev/null
-    rm -f /etc/systemd/system/xray-vlessenc.service
-    rm -f /usr/local/etc/xray/vlessenc.json
+    echo "正在卸载 VMess+WS..."
+    systemctl stop xray-vmessws 2>/dev/null
+    systemctl disable xray-vmessws 2>/dev/null
+    rm -f /etc/systemd/system/xray-vmessws.service
+    rm -f /usr/local/etc/xray/vmessws.json
     systemctl daemon-reload
     m2_log_success "卸载完成"
 }
 
 m2_view_info() {
-    if [ -f /root/four-in-one/xray_vless_encryption_link.txt ]; then
+    if [ -f /root/four-in-one/xray_vmess_ws_link.txt ]; then
         echo -e "${C_GREEN}上次生成的链接:${C_RESET}"
-        cat /root/four-in-one/xray_vless_encryption_link.txt
+        cat /root/four-in-one/xray_vmess_ws_link.txt
     else
         m2_log_error "未找到链接文件，请重新安装或检查配置。"
     fi
 }
 
-module_vless_menu() {
+module_vmess_ws_menu() {
     while true; do
         clear
-        echo -e "${C_CYAN}=== VLESS-Enc ===${C_RESET}"
-        if systemctl is-active --quiet xray-vlessenc; then
+        echo -e "${C_CYAN}=== VMess+WS ===${C_RESET}"
+        if systemctl is-active --quiet xray-vmessws; then
              echo -e "状态: ${C_GREEN}运行中${C_RESET}"
         else
              echo -e "状态: ${C_RED}未运行${C_RESET}"
         fi
-        echo "1. 安装VLESS-Enc"
+        echo "1. 安装VMess+WS"
         echo "2. 查看链接"
         echo "3. 重启服务"
         echo "4. 卸载服务"
@@ -696,9 +669,9 @@ module_vless_menu() {
         case $choice in
             1) m2_install_xray; pause_key ;;
             2) m2_view_info; pause_key ;;
-            3) m2_restart_xray_vlessenc; m2_log_success "已重启"; pause_key ;;
+            3) m2_restart_xray_vmess_ws; m2_log_success "已重启"; pause_key ;;
             4) m2_uninstall_xray; pause_key ;;
-            5) journalctl -u xray-vlessenc -n 20 --no-pager; pause_key ;;
+            5) journalctl -u xray-vmessws -n 20 --no-pager; pause_key ;;
             0) return ;;
             *) echo "无效选项"; pause_key ;;
         esac
@@ -737,7 +710,7 @@ m3_install_ss() {
     
     mkdir -p "$(dirname "$CONFIG_PATH")"
 
-    # 写入配置 (Xray 格式，移除不支持的 settings.network 字段)
+    # 写入配置
     cat <<EOF > "$CONFIG_PATH"
 {
     "log": {"loglevel": "warning"},
@@ -829,12 +802,6 @@ m3_uninstall_ss() {
     rm -f "/etc/systemd/system/xray-ss2022.service"
     systemctl daemon-reload
     rm -f "/usr/local/etc/xray/ss2022.json"
-    # 同时清理可能的旧版残留
-    systemctl stop ss-rust 2>/dev/null
-    systemctl disable ss-rust 2>/dev/null
-    rm -f "/etc/systemd/system/ss-rust.service"
-    rm -f "/usr/local/bin/ss-rust"
-    rm -rf "/etc/ss-rust"
     echo -e "${C_GREEN}[成功] 已卸载${C_RESET}"
 }
 
@@ -872,7 +839,7 @@ install_all_services() {
     clear
     echo -e "${C_YELLOW}>>> 开始安装服务...${C_RESET}"
 
-    m0_install_reality
+    m0_install_vmess_tcp
     m2_install_xray
     m3_install_ss
     m1_install_xray
@@ -882,11 +849,10 @@ install_all_services() {
 }
 
 # ==============================================================================
-# 主逻辑入口
+# 卸载所有服务逻辑
 # ==============================================================================
-
 uninstall_all() {
-    echo -e "${C_RED}警告: 即将卸载所有模块 (VLESS-Reality, VLESS-Enc, SS-2022, Socks5)!${C_RESET}"
+    echo -e "${C_RED}警告: 即将卸载所有模块 (VMess+TCP, VMess+WS, SS-2022, Socks5)!${C_RESET}"
     
     # 命令行模式跳过确认
     if [[ "$CLI_MODE" -eq 0 ]]; then
@@ -897,18 +863,17 @@ uninstall_all() {
         fi
     fi
 
-    # 暴力停止所有可能的服务 (包括新的 xray-ss2022 和旧的 ss-rust)
-    systemctl stop xray-reality xray-vlessenc xray-socks5 xray-ss2022 ss-rust 2>/dev/null
-    systemctl disable xray-reality xray-vlessenc xray-socks5 xray-ss2022 ss-rust 2>/dev/null
+    # 暴力停止所有可能的服务
+    systemctl stop xray-vmesstcp xray-vmessws xray-socks5 xray-ss2022 2>/dev/null
+    systemctl disable xray-vmesstcp xray-vmessws xray-socks5 xray-ss2022 2>/dev/null
     
-    rm -f /etc/systemd/system/xray-reality.service
-    rm -f /etc/systemd/system/xray-vlessenc.service
+    rm -f /etc/systemd/system/xray-vmesstcp.service
+    rm -f /etc/systemd/system/xray-vmessws.service
     rm -f /etc/systemd/system/xray-socks5.service
     rm -f /etc/systemd/system/xray-ss2022.service
-    rm -f /etc/systemd/system/ss-rust.service
     systemctl daemon-reload
     
-    # 彻底卸载 xray 核心（用官方脚本）
+    # 彻底卸载 xray 核心
     if command -v /usr/local/bin/xray &>/dev/null; then
         local xray_install_script_url="https://github.com/XTLS/Xray-install/raw/main/install-release.sh"
         local content
@@ -922,41 +887,54 @@ uninstall_all() {
         fi
     fi
     
-    rm -f /usr/local/bin/ss-rust
-    rm -rf /etc/ss-rust
     rm -rf /etc/xrayL
     rm -rf /root/four-in-one
     
     echo -e "${C_GREEN}所有组件已清理完毕。${C_RESET}"
 }
 
+# ==============================================================================
+# 主逻辑入口 (初始化流)
+# ==============================================================================
+
+# 1. 检查是否为 Root 用户
 check_root
 
-# 处理命令行参数
+# 2. 命令行参数解析 (优先拦截卸载等不需要同步时间的命令)
 if [[ -n "$1" ]]; then
     case "$1" in
         --1)
             CLI_MODE=1
-            m0_install_reality
+            install_dependencies
+            setup_ntp_sync
+            m0_install_vmess_tcp
             exit 0
             ;;
         --2)
             CLI_MODE=1
+            install_dependencies
+            setup_ntp_sync
             m2_install_xray
             exit 0
             ;;
         --3)
             CLI_MODE=1
+            install_dependencies
+            setup_ntp_sync
             m3_install_ss
             exit 0
             ;;
         --4)
             CLI_MODE=1
+            install_dependencies
+            setup_ntp_sync
             m1_install_xray
             exit 0
             ;;
         --8)
             CLI_MODE=1
+            install_dependencies
+            setup_ntp_sync
             install_all_services
             exit 0
             ;;
@@ -968,26 +946,18 @@ if [[ -n "$1" ]]; then
     esac
 fi
 
-# 检查权限和时间同步
-check_root
+# 3. 如果没有带参数（进入交互菜单模式），则执行依赖安装和时间同步
+install_dependencies
 setup_ntp_sync
-# 安装基础依赖
-if ! command -v curl &>/dev/null || ! command -v unzip &>/dev/null; then
-    echo "安装基础依赖..."
-    if command -v apt-get &>/dev/null; then
-        apt-get update >/dev/null 2>&1 && apt-get install -y curl unzip wget tar openssl >/dev/null 2>&1
-    elif command -v yum &>/dev/null; then
-        yum install -y curl unzip wget tar openssl >/dev/null 2>&1
-    fi
-fi
 
+# 4. 进入交互式主菜单
 while true; do
     clear
     echo -e "${C_GREEN}==============================================${C_RESET}"
     echo -e "${C_CYAN}   四合一代理脚本 (Four-in-one Script)   ${C_RESET}"
     echo -e "${C_GREEN}==============================================${C_RESET}"
-    echo -e "1. ${C_YELLOW}VLESS-Reality${C_RESET}"
-    echo -e "2. ${C_YELLOW}VLESS-Enc${C_RESET}"
+    echo -e "1. ${C_YELLOW}VMess+TCP${C_RESET}"
+    echo -e "2. ${C_YELLOW}VMess+WS${C_RESET}"
     echo -e "3. ${C_YELLOW}SS-2022${C_RESET}"
     echo -e "4. ${C_YELLOW}Socks5${C_RESET}"
     echo -e "----------------------------------------------"
@@ -998,8 +968,8 @@ while true; do
     read -p "请输入选项: " main_choice
 
     case $main_choice in
-        1) module_reality_menu ;;
-        2) module_vless_menu ;;
+        1) module_vmess_tcp_menu ;;
+        2) module_vmess_ws_menu ;;
         3) module_ssrust_menu ;;
         4) module_socks5_menu ;;
         8) install_all_services ;;
