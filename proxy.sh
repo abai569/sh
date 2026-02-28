@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # 四合一代理管理脚本 (Four-in-one Proxy Manager)
-# 优化版本 - 性能提升 - 本地版本号获取 - 依赖前置
+# 优化版本 - 性能提升 - 本地版本号获取 - 依赖前置 - GitHub镜像加速
 # ==============================================================================
 
 # 全局颜色定义
@@ -151,11 +151,12 @@ get_xray_version() {
 }
 
 # ==============================================================================
-# 统一 Xray 核心安装函数
+# 统一 Xray 核心安装函数 (带 GitHub 代理镜像加速)
 # ==============================================================================
 
 install_xray_core() {
     local xray_binary_path="/usr/local/bin/xray"
+    local proxy_prefix="https://gcode.hostcentral.cc/"
     
     # 已安装则不重复安装核心
     if [[ -f "$xray_binary_path" ]]; then
@@ -163,16 +164,35 @@ install_xray_core() {
         return 0
     fi
     
-    local xray_install_script_url="https://github.com/XTLS/Xray-install/raw/main/install-release.sh"
+    # 通过代理下载官方安装脚本
+    local xray_install_script_url="${proxy_prefix}https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh"
     local content
-    content=$(curl -sL --max-time 10 "$xray_install_script_url" 2>/dev/null)
+    content=$(curl -sL --max-time 15 "$xray_install_script_url" 2>/dev/null)
+    
     if [[ -z "$content" || ! "$content" =~ "install-release" ]]; then
-        echo -e "${C_RED}[✖] 无法下载 Xray 安装脚本${C_RESET}"
+        echo -e "${C_RED}[✖] 无法通过加速镜像下载 Xray 安装脚本，请检查网络！${C_RESET}"
         return 1
     fi
     
-    echo "$content" | bash -s -- install >/dev/null 2>&1
-    echo "$content" | bash -s -- install-geodata >/dev/null 2>&1
+    echo -e "${C_BLUE}[*] 开始下载并安装 Xray 核心 (使用加速镜像)...${C_RESET}"
+    
+    # 利用字符串替换，把脚本内部的 github.com 链接全部换成带代理前缀的链接
+    content="${content//https:\/\/github.com/${proxy_prefix}https:\/\/github.com}"
+    content="${content//https:\/\/raw.githubusercontent.com/${proxy_prefix}https:\/\/raw.githubusercontent.com}"
+    
+    # 执行安装核心，暴露出输出信息方便排错
+    echo "$content" | bash -s -- install
+    
+    # 执行安装 Geo 数据
+    echo "$content" | bash -s -- install-geodata
+    
+    # 增加严格校验：到底装进去了没有
+    if [[ ! -f "$xray_binary_path" ]]; then
+        echo -e "${C_RED}[✖] Xray 核心安装失败！请检查上方报错日志。${C_RESET}"
+        return 1
+    fi
+    
+    return 0
 }
 
 # ==============================================================================
@@ -239,20 +259,16 @@ m0_install_vmess_tcp() {
         echo ""
         return 0
     fi
-
-    # 新安装：显示安装信息
-    echo "正在安装 Xray 核心..."
     
     # 安装 Xray 核心
     if ! install_xray_core; then
-        m0_log_error "核心安装失败"
         return 1
     fi
     
     # 显示版本号
-    echo "版本号: $(get_xray_version)"
+    echo "Xray 核心版本号: $(get_xray_version)"
 
-    echo "正在安装 VMess+TCP..."
+    echo "正在配置 VMess+TCP..."
     mkdir -p "$(dirname "$xray_config_path")"
     cat > "$xray_config_path" <<EOF
 {
@@ -384,7 +400,7 @@ EOF
         systemctl enable xray-socks5.service >/dev/null 2>&1
         
         # 显示安装信息（仅新安装）
-        echo "正在安装 Socks5..."
+        echo "正在配置 Socks5..."
 		
     fi
     # ====================
@@ -580,16 +596,12 @@ m2_install_xray() {
         return 0
     fi
     
-    # 新安装：显示安装信息
-    echo "正在安装 VMess+WS..."
-    
     # 安装 Xray 核心
     if ! install_xray_core; then
-        m2_log_error "核心安装失败"
         return 1
     fi
 
-    # 写入配置
+    echo "正在配置 VMess+WS..."
     mkdir -p "$(dirname "$xray_config_path")"
     cat > "$xray_config_path" <<EOF
 {
@@ -700,14 +712,12 @@ m3_install_ss() {
     local method="2022-blake3-aes-128-gcm"
     # ----------------
 
-    echo "正在安装 SS-2022..."
-    
     # 安装 Xray 核心
     if ! install_xray_core; then
-        echo -e "${C_RED}[✖] 核心安装失败${C_RESET}"
         return 1
     fi
     
+    echo "正在配置 SS-2022..."
     mkdir -p "$(dirname "$CONFIG_PATH")"
 
     # 写入配置
@@ -873,19 +883,10 @@ uninstall_all() {
     rm -f /etc/systemd/system/xray-ss2022.service
     systemctl daemon-reload
     
-    # 彻底卸载 xray 核心
-    if command -v /usr/local/bin/xray &>/dev/null; then
-        local xray_install_script_url="https://github.com/XTLS/Xray-install/raw/main/install-release.sh"
-        local content
-        content=$(curl -sL "$xray_install_script_url" 2>/dev/null)
-        if [[ -n "$content" ]]; then
-            echo "$content" | bash -s -- remove --purge >/dev/null 2>&1
-        else
-            rm -f /usr/local/bin/xray
-            rm -rf /usr/local/etc/xray
-            rm -rf /usr/local/share/xray
-        fi
-    fi
+    # 直接手动删除Xray核心，最稳妥快速
+    rm -f /usr/local/bin/xray
+    rm -rf /usr/local/etc/xray
+    rm -rf /usr/local/share/xray
     
     rm -rf /etc/xrayL
     rm -rf /root/four-in-one
@@ -900,7 +901,7 @@ uninstall_all() {
 # 1. 检查是否为 Root 用户
 check_root
 
-# 2. 命令行参数解析 (优先拦截卸载等不需要同步时间的命令)
+# 2. 命令行参数解析 (优先拦截卸载命令，跳过时间同步和依赖安装)
 if [[ -n "$1" ]]; then
     case "$1" in
         --1)
@@ -946,7 +947,7 @@ if [[ -n "$1" ]]; then
     esac
 fi
 
-# 3. 如果没有带参数（进入交互菜单模式），则执行依赖安装和时间同步
+# 3. 如果无参数运行，则安装依赖并同步时间
 install_dependencies
 setup_ntp_sync
 
