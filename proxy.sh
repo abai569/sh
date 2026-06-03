@@ -156,7 +156,7 @@ get_xray_version() {
 
 install_xray_core() {
     local xray_binary_path="/usr/local/bin/xray"
-    local proxy_prefix="https://gcode.hostcentral.cc/"
+    local proxy_prefix="https://ghfast.top/"
     
     # 已安装则不重复安装核心
     if [[ -f "$xray_binary_path" ]]; then
