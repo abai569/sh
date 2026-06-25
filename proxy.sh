@@ -868,7 +868,7 @@ m4_install_anytls() {
     local SERVICE_FILE="/etc/systemd/system/anytls.service"
 
     # --- 默认配置 ---
-    local PORT=20203
+    local PORT=26203
     local PASSWORD="AnyTLS569"
     # ----------------
 
