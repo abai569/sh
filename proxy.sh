@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # ==============================================================================
-# 四合一代理管理脚本 (Four-in-one Proxy Manager)
-# 优化版本 - 性能提升 - 本地版本号获取 - 依赖前置 - GitHub镜像加速
+# 阿白的一键代理装脚本-自用
+# 六合一 - VMess/VLESS/SS-2022/AnyTLS/Hysteria2/Socks5
 # ==============================================================================
 
 # 全局颜色定义
@@ -368,7 +368,7 @@ m1_install_xray() {
     local CONFIG_PATH="/usr/local/etc/xray/socks5.json"
     
     # --- 默认配置 ---
-    local START_PORT=20264
+    local START_PORT=26208
     local USER="abai"
     local PASS="abai569"
     # ----------------
@@ -858,6 +858,419 @@ module_ssrust_menu() {
 }
 
 # ==============================================================================
+# 模块 4: AnyTLS - 函数定义
+# ==============================================================================
+
+m4_install_anytls() {
+    local CONFIG_DIR="/etc/AnyTLS"
+    local SERVER_FILE="${CONFIG_DIR}/server"
+    local CONFIG_FILE="${CONFIG_DIR}/config.yaml"
+    local SERVICE_FILE="/etc/systemd/system/anytls.service"
+
+    # --- 默认配置 ---
+    local PORT=20203
+    local PASSWORD="AnyTLS569"
+    # ----------------
+
+    # 检测是否已安装
+    if [[ -f "$SERVICE_FILE" ]] && systemctl is-active --quiet anytls 2>/dev/null; then
+        echo -e "${C_YELLOW}检测到 AnyTLS 已安装，跳过安装步骤。${C_RESET}"
+        local ip
+        ip=$(get_public_ip)
+        echo -e "${C_GREEN}=== AnyTLS 节点链接 ===${C_RESET}"
+        echo "anytls://${PASSWORD}@${ip}:${PORT}/?insecure=1#AnyTLS"
+        echo ""
+        return 0
+    fi
+
+    echo -e "${C_BLUE}[*] 开始安装 AnyTLS...${C_RESET}"
+
+    # 检测系统架构
+    local ARCH
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64|amd64) ARCH="amd64" ;;
+        aarch64|arm64) ARCH="arm64" ;;
+        *) echo -e "${C_RED}[✖] 不支持的架构: $ARCH${C_RESET}"; return 1 ;;
+    esac
+
+    # 获取最新版本
+    local LATEST
+    LATEST=$(curl -s https://api.github.com/repos/anytls/anytls-go/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+    if [[ -z "$LATEST" ]]; then
+        echo -e "${C_RED}[✖] 无法获取 AnyTLS 最新版本号${C_RESET}"
+        return 1
+    fi
+
+    echo -e "${C_BLUE}[*] AnyTLS 版本: ${LATEST}, 架构: ${ARCH}${C_RESET}"
+
+    # 创建目录
+    mkdir -p "$CONFIG_DIR"
+
+    # 下载并安装
+    local DOWNLOAD_URL="https://github.com/anytls/anytls-go/releases/download/${LATEST}/anytls_${LATEST#v}_linux_${ARCH}.zip"
+    local TMP_DIR="/tmp/anytls_install_$$"
+    mkdir -p "$TMP_DIR"
+
+    echo -e "${C_BLUE}[*] 下载 AnyTLS...${C_RESET}"
+    if ! curl -L -o "${TMP_DIR}/anytls.zip" "$DOWNLOAD_URL" 2>/dev/null; then
+        echo -e "${C_RED}[✖] 下载失败${C_RESET}"
+        rm -rf "$TMP_DIR"
+        return 1
+    fi
+
+    unzip -o "${TMP_DIR}/anytls.zip" -d "$TMP_DIR" >/dev/null 2>&1
+    mv "${TMP_DIR}/anytls-server" "$SERVER_FILE"
+    chmod +x "$SERVER_FILE"
+    rm -rf "$TMP_DIR"
+
+    # 写入配置
+    cat > "$CONFIG_FILE" <<EOF
+listen: :${PORT}
+auth:
+  type: password
+  password: ${PASSWORD}
+EOF
+
+    # 创建 systemd 服务
+    cat > "$SERVICE_FILE" <<EOF
+[Unit]
+Description=AnyTLS Server Service
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart="${SERVER_FILE}" -l 0.0.0.0:${PORT} -p "${PASSWORD}"
+Restart=on-failure
+RestartSec=10s
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable anytls >/dev/null 2>&1
+    systemctl restart anytls
+    sleep 2
+
+    if systemctl is-active --quiet anytls; then
+        local ip
+        ip=$(get_public_ip)
+        echo -e "${C_GREEN}[✔] AnyTLS 安装完成！${C_RESET}"
+        echo -e "${C_YELLOW}端口: ${PORT}, 密码: ${PASSWORD}${C_RESET}"
+        echo -e "\n${C_GREEN}=== AnyTLS 节点链接 ===${C_RESET}"
+        echo "anytls://${PASSWORD}@${ip}:${PORT}/?insecure=1#AnyTLS"
+        echo ""
+        mkdir -p /root/four-in-one
+        echo "anytls://${PASSWORD}@${ip}:${PORT}/?insecure=1#AnyTLS" > /root/four-in-one/anytls_link.txt
+    else
+        echo -e "${C_RED}[✖] AnyTLS 启动失败，请检查日志${C_RESET}"
+        return 1
+    fi
+}
+
+m4_uninstall_anytls() {
+    echo "正在卸载 AnyTLS..."
+    systemctl stop anytls 2>/dev/null
+    systemctl disable anytls 2>/dev/null
+    rm -f /etc/systemd/system/anytls.service
+    rm -rf /etc/AnyTLS
+    rm -f /root/four-in-one/anytls_link.txt
+    systemctl daemon-reload
+    echo -e "${C_GREEN}[✔] AnyTLS 已卸载${C_RESET}"
+}
+
+m4_view_info() {
+    if [ -f /root/four-in-one/anytls_link.txt ]; then
+        cat /root/four-in-one/anytls_link.txt
+    else
+        echo -e "${C_RED}[✖] 未找到 AnyTLS 链接，请先安装。${C_RESET}"
+    fi
+}
+
+module_anytls_menu() {
+    while true; do
+        clear
+        echo -e "${C_CYAN}=== AnyTLS ===${C_RESET}"
+        if systemctl is-active --quiet anytls 2>/dev/null; then
+            echo -e "状态: ${C_GREEN}运行中${C_RESET}"
+        else
+            echo -e "状态: ${C_RED}未运行${C_RESET}"
+        fi
+        echo "1. 安装 AnyTLS"
+        echo "2. 查看链接"
+        echo "3. 重启服务"
+        echo "4. 卸载服务"
+        echo "0. 返回主菜单"
+        echo "------------------------"
+        read -p "请选择: " choice
+        case $choice in
+            1) m4_install_anytls; pause_key ;;
+            2) m4_view_info; pause_key ;;
+            3) systemctl restart anytls; echo -e "${C_GREEN}已重启${C_RESET}"; pause_key ;;
+            4) m4_uninstall_anytls; pause_key ;;
+            0) return ;;
+            *) echo "无效选项"; pause_key ;;
+        esac
+    done
+}
+
+# ==============================================================================
+# 模块 5: Hysteria2 - 函数定义 (调用官方脚本)
+# ==============================================================================
+
+m5_install_hysteria2() {
+    echo -e "${C_BLUE}[*] 即将调用 Hysteria2 官方安装脚本...${C_RESET}"
+    echo -e "${C_YELLOW}请按照官方脚本提示完成安装（端口、密码、证书等）${C_RESET}"
+    echo ""
+    bash <(curl -fsSL https://get.hy2.sh/)
+}
+
+m5_uninstall_hysteria2() {
+    echo "正在卸载 Hysteria2..."
+    bash <(curl -fsSL https://get.hy2.sh/) --remove 2>/dev/null
+    systemctl stop hysteria-server 2>/dev/null
+    systemctl disable hysteria-server 2>/dev/null
+    rm -f /etc/systemd/system/hysteria-server.service
+    rm -rf /etc/hysteria
+    systemctl daemon-reload
+    echo -e "${C_GREEN}[✔] Hysteria2 已卸载${C_RESET}"
+}
+
+m5_view_info() {
+    if systemctl is-active --quiet hysteria-server 2>/dev/null; then
+        echo -e "${C_GREEN}Hysteria2 服务运行中${C_RESET}"
+        echo -e "${C_YELLOW}查看配置: cat /etc/hysteria/config.yaml${C_RESET}"
+    else
+        echo -e "${C_RED}[✖] Hysteria2 未运行或未安装${C_RESET}"
+    fi
+}
+
+module_hysteria2_menu() {
+    while true; do
+        clear
+        echo -e "${C_CYAN}=== Hysteria2 ===${C_RESET}"
+        if systemctl is-active --quiet hysteria-server 2>/dev/null; then
+            echo -e "状态: ${C_GREEN}运行中${C_RESET}"
+        else
+            echo -e "状态: ${C_RED}未运行${C_RESET}"
+        fi
+        echo "1. 安装 Hysteria2 (官方脚本)"
+        echo "2. 查看状态"
+        echo "3. 重启服务"
+        echo "4. 卸载服务"
+        echo "0. 返回主菜单"
+        echo "------------------------"
+        read -p "请选择: " choice
+        case $choice in
+            1) m5_install_hysteria2; pause_key ;;
+            2) m5_view_info; pause_key ;;
+            3) systemctl restart hysteria-server; echo -e "${C_GREEN}已重启${C_RESET}"; pause_key ;;
+            4) m5_uninstall_hysteria2; pause_key ;;
+            0) return ;;
+            *) echo "无效选项"; pause_key ;;
+        esac
+    done
+}
+
+# ==============================================================================
+# 独立卸载函数 (命令行模式)
+# ==============================================================================
+
+un_vmess_tcp() {
+    echo "正在卸载 VMess+TCP..."
+    systemctl stop xray-vmesstcp 2>/dev/null
+    systemctl disable xray-vmesstcp 2>/dev/null
+    rm -f /etc/systemd/system/xray-vmesstcp.service
+    rm -f /usr/local/etc/xray/vmesstcp.json
+    rm -f /root/four-in-one/xray_vmess_tcp_link.txt
+    systemctl daemon-reload
+    echo -e "${C_GREEN}[✔] VMess+TCP 已卸载${C_RESET}"
+}
+
+un_vless_reality() {
+    echo "正在卸载 VLESS+REALITY..."
+    systemctl stop xray-vlessreality 2>/dev/null
+    systemctl disable xray-vlessreality 2>/dev/null
+    rm -f /etc/systemd/system/xray-vlessreality.service
+    rm -f /usr/local/etc/xray/vlessreality.json
+    rm -f /root/four-in-one/xray_vless_reality_link.txt
+    systemctl daemon-reload
+    echo -e "${C_GREEN}[✔] VLESS+REALITY 已卸载${C_RESET}"
+}
+
+un_ss2022() {
+    echo "正在卸载 SS-2022..."
+    systemctl stop xray-ss2022 2>/dev/null
+    systemctl disable xray-ss2022 2>/dev/null
+    rm -f /etc/systemd/system/xray-ss2022.service
+    rm -f /usr/local/etc/xray/ss2022.json
+    systemctl daemon-reload
+    echo -e "${C_GREEN}[✔] SS-2022 已卸载${C_RESET}"
+}
+
+un_socks5() {
+    echo "正在卸载 Socks5..."
+    systemctl stop xray-socks5.service 2>/dev/null
+    systemctl disable xray-socks5.service 2>/dev/null
+    rm -f /etc/systemd/system/xray-socks5.service
+    rm -f /usr/local/etc/xray/socks5.json
+    rm -rf /etc/xrayL
+    systemctl daemon-reload
+    echo -e "${C_GREEN}[✔] Socks5 已卸载${C_RESET}"
+}
+
+un_anytls() {
+    echo "正在卸载 AnyTLS..."
+    systemctl stop anytls 2>/dev/null
+    systemctl disable anytls 2>/dev/null
+    rm -f /etc/systemd/system/anytls.service
+    rm -rf /etc/AnyTLS
+    rm -f /root/four-in-one/anytls_link.txt
+    systemctl daemon-reload
+    echo -e "${C_GREEN}[✔] AnyTLS 已卸载${C_RESET}"
+}
+
+un_hysteria2() {
+    echo "正在卸载 Hysteria2..."
+    bash <(curl -fsSL https://get.hy2.sh/) --remove 2>/dev/null
+    systemctl stop hysteria-server 2>/dev/null
+    systemctl disable hysteria-server 2>/dev/null
+    rm -f /etc/systemd/system/hysteria-server.service
+    rm -rf /etc/hysteria
+    systemctl daemon-reload
+    echo -e "${C_GREEN}[✔] Hysteria2 已卸载${C_RESET}"
+}
+
+# ==============================================================================
+# 查看所有链接+状态 (命令行模式)
+# ==============================================================================
+
+view_all_links() {
+    local ip
+    ip=$(get_public_ip)
+
+    echo -e "${C_GREEN}==============================================${C_RESET}"
+    echo -e "${C_CYAN}   阿白的一键代理 - 服务状态与链接   ${C_RESET}"
+    echo -e "${C_GREEN}==============================================${C_RESET}"
+
+    # VMess+TCP
+    echo -e "\n${C_YELLOW}[1] VMess+TCP${C_RESET}"
+    if systemctl is-active --quiet xray-vmesstcp 2>/dev/null; then
+        echo -e "状态: ${C_GREEN}运行中${C_RESET}"
+    else
+        echo -e "状态: ${C_RED}未运行${C_RESET}"
+    fi
+    if [ -f /root/four-in-one/xray_vmess_tcp_link.txt ]; then
+        cat /root/four-in-one/xray_vmess_tcp_link.txt
+    else
+        echo "链接: 未安装"
+    fi
+
+    # VLESS+REALITY
+    echo -e "\n${C_YELLOW}[2] VLESS+REALITY${C_RESET}"
+    if systemctl is-active --quiet xray-vlessreality 2>/dev/null; then
+        echo -e "状态: ${C_GREEN}运行中${C_RESET}"
+    else
+        echo -e "状态: ${C_RED}未运行${C_RESET}"
+    fi
+    if [ -f /root/four-in-one/xray_vless_reality_link.txt ]; then
+        cat /root/four-in-one/xray_vless_reality_link.txt
+    else
+        echo "链接: 未安装"
+    fi
+
+    # SS-2022
+    echo -e "\n${C_YELLOW}[3] SS-2022${C_RESET}"
+    if systemctl is-active --quiet xray-ss2022 2>/dev/null; then
+        echo -e "状态: ${C_GREEN}运行中${C_RESET}"
+    else
+        echo -e "状态: ${C_RED}未运行${C_RESET}"
+    fi
+    local ss_config="/usr/local/etc/xray/ss2022.json"
+    if [ -f "$ss_config" ]; then
+        local ss_port ss_password ss_method ss_link
+        ss_port=$(grep '"port"' "$ss_config" | tr -cd '0-9')
+        ss_password=$(grep '"password"' "$ss_config" | cut -d'"' -f4)
+        ss_method=$(grep '"method"' "$ss_config" | cut -d'"' -f4)
+        ss_link="ss://$(echo -n "${ss_method}:${ss_password}" | base64 -w 0)@${ip}:${ss_port}#SS-2022"
+        echo "$ss_link"
+    else
+        echo "链接: 未安装"
+    fi
+
+    # AnyTLS
+    echo -e "\n${C_YELLOW}[4] AnyTLS${C_RESET}"
+    if systemctl is-active --quiet anytls 2>/dev/null; then
+        echo -e "状态: ${C_GREEN}运行中${C_RESET}"
+    else
+        echo -e "状态: ${C_RED}未运行${C_RESET}"
+    fi
+    if [ -f /root/four-in-one/anytls_link.txt ]; then
+        cat /root/four-in-one/anytls_link.txt
+    else
+        echo "链接: 未安装"
+    fi
+
+    # Hysteria2
+    echo -e "\n${C_YELLOW}[5] Hysteria2${C_RESET}"
+    if systemctl is-active --quiet hysteria-server 2>/dev/null; then
+        echo -e "状态: ${C_GREEN}运行中${C_RESET}"
+    else
+        echo -e "状态: ${C_RED}未运行${C_RESET}"
+    fi
+    if [ -f /etc/hysteria/config.yaml ]; then
+        echo -e "配置: /etc/hysteria/config.yaml"
+        echo -e "${C_YELLOW}查看链接: cat /etc/hysteria/config.yaml${C_RESET}"
+    else
+        echo "链接: 未安装"
+    fi
+
+    # Socks5
+    echo -e "\n${C_YELLOW}[6] Socks5${C_RESET}"
+    if systemctl is-active --quiet xray-socks5 2>/dev/null; then
+        echo -e "状态: ${C_GREEN}运行中${C_RESET}"
+    else
+        echo -e "状态: ${C_RED}未运行${C_RESET}"
+    fi
+    local socks5_config="/usr/local/etc/xray/socks5.json"
+    if [ -f "$socks5_config" ]; then
+        local socks5_user socks5_pass
+        socks5_user=$(grep -o '"user": *"[^"]*"' "$socks5_config" | head -1 | cut -d'"' -f4)
+        socks5_pass=$(grep -o '"pass": *"[^"]*"' "$socks5_config" | head -1 | cut -d'"' -f4)
+        [ -z "$socks5_user" ] && socks5_user="abai"
+        [ -z "$socks5_pass" ] && socks5_pass="abai569"
+        local idx=0
+        while read -r sip; do
+            [[ "$sip" =~ ^(10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168|127\.) ]] && continue
+            if curl --interface "$sip" -s4 --max-time 3 ip.sb 2>/dev/null | grep -q "$sip"; then
+                printf "socks5://%s:%s@%s:%s\n" "$socks5_user" "$socks5_pass" "$sip" "$((26208+idx))"
+                idx=$((idx+1))
+            fi
+        done < <(ip -4 addr show scope global | awk '{print $2}' | cut -d/ -f1)
+        local pub_ipv4
+        pub_ipv4=$(curl -s4 --max-time 3 ip.sb 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')
+        if [ -n "$pub_ipv4" ]; then
+            printf "socks5://%s:%s@%s:%s\n" "$socks5_user" "$socks5_pass" "$pub_ipv4" "$((26208+idx))"
+        fi
+        while read -r sip6; do
+            [[ "$sip6" =~ ^(fd|fe80) ]] && continue
+            if curl --interface "$sip6" -s6 --max-time 3 ip.sb 2>/dev/null | grep -q ':'; then
+                printf "socks5://%s:%s@[%s]:%s\n" "$socks5_user" "$socks5_pass" "$sip6" "$((26208+idx))"
+                idx=$((idx+1))
+            fi
+        done < <(ip -6 addr show scope global | awk '{print $2}' | cut -d/ -f1)
+    else
+        echo "链接: 未安装"
+    fi
+
+    echo -e "\n${C_GREEN}==============================================${C_RESET}"
+}
+
+# ==============================================================================
 # 一键安装所有服务
 # ==============================================================================
 install_all_services() {
@@ -867,9 +1280,11 @@ install_all_services() {
     m0_install_vmess_tcp
     m2_install_xray
     m3_install_ss
+    m4_install_anytls
     m1_install_xray
 
-    echo -e "${C_GREEN}>>> 服务全部安装${C_RESET}"
+    echo -e "${C_GREEN}>>> 服务全部安装完成${C_RESET}"
+    echo -e "${C_YELLOW}>>> Hysteria2 请通过菜单选项5手动安装（官方交互式脚本）${C_RESET}"
     pause_key
 }
 
@@ -877,7 +1292,7 @@ install_all_services() {
 # 卸载所有服务逻辑
 # ==============================================================================
 uninstall_all() {
-    echo -e "${C_RED}警告: 即将卸载所有模块 (VMess+TCP, VLESS+REALITY, SS-2022, Socks5)!${C_RESET}"
+    echo -e "${C_RED}警告: 即将卸载所有模块 (VMess+TCP, VLESS+REALITY, SS-2022, AnyTLS, Hysteria2, Socks5)!${C_RESET}"
     
     # 命令行模式跳过确认
     if [[ "$CLI_MODE" -eq 0 ]]; then
@@ -889,19 +1304,28 @@ uninstall_all() {
     fi
 
     # 暴力停止所有可能的服务
-    systemctl stop xray-vmesstcp xray-vlessreality xray-socks5 xray-ss2022 2>/dev/null
-    systemctl disable xray-vmesstcp xray-vlessreality xray-socks5 xray-ss2022 2>/dev/null
+    systemctl stop xray-vmesstcp xray-vlessreality xray-socks5 xray-ss2022 anytls hysteria-server 2>/dev/null
+    systemctl disable xray-vmesstcp xray-vlessreality xray-socks5 xray-ss2022 anytls hysteria-server 2>/dev/null
     
     rm -f /etc/systemd/system/xray-vmesstcp.service
     rm -f /etc/systemd/system/xray-vlessreality.service
     rm -f /etc/systemd/system/xray-socks5.service
     rm -f /etc/systemd/system/xray-ss2022.service
+    rm -f /etc/systemd/system/anytls.service
+    rm -f /etc/systemd/system/hysteria-server.service
     systemctl daemon-reload
     
-    # 直接手动删除Xray核心，最稳妥快速
+    # 删除Xray核心
     rm -f /usr/local/bin/xray
     rm -rf /usr/local/etc/xray
     rm -rf /usr/local/share/xray
+    
+    # 删除AnyTLS
+    rm -rf /etc/AnyTLS
+    
+    # 删除Hysteria2
+    bash <(curl -fsSL https://get.hy2.sh/) --remove 2>/dev/null
+    rm -rf /etc/hysteria
     
     rm -rf /etc/xrayL
     rm -rf /root/four-in-one
@@ -916,48 +1340,104 @@ uninstall_all() {
 # 1. 检查是否为 Root 用户
 check_root
 
-# 2. 命令行参数解析 (优先拦截卸载命令，跳过时间同步和依赖安装)
+# 2. 命令行参数解析 (去除首尾空格，兼容有无空格)
 if [[ -n "$1" ]]; then
-    case "$1" in
-        --1)
+    ARG="${1#"${1%%[![:space:]]*}"}"
+    ARG="${ARG%"${ARG##*[![:space:]]}"}"
+    case "$ARG" in
+        in1)
             CLI_MODE=1
             install_dependencies
             setup_ntp_sync
             m0_install_vmess_tcp
             exit 0
             ;;
-        --2)
+        in2)
             CLI_MODE=1
             install_dependencies
             setup_ntp_sync
             m2_install_xray
             exit 0
             ;;
-        --3)
+        in3)
             CLI_MODE=1
             install_dependencies
             setup_ntp_sync
             m3_install_ss
             exit 0
             ;;
-        --4)
+        in4)
+            CLI_MODE=1
+            install_dependencies
+            setup_ntp_sync
+            m4_install_anytls
+            exit 0
+            ;;
+        in5)
+            CLI_MODE=1
+            install_dependencies
+            setup_ntp_sync
+            m5_install_hysteria2
+            exit 0
+            ;;
+        in6)
             CLI_MODE=1
             install_dependencies
             setup_ntp_sync
             m1_install_xray
             exit 0
             ;;
-        --8)
+        inall)
             CLI_MODE=1
             install_dependencies
             setup_ntp_sync
             install_all_services
             exit 0
             ;;
-        --9)
+        un1)
+            CLI_MODE=1
+            un_vmess_tcp
+            exit 0
+            ;;
+        un2)
+            CLI_MODE=1
+            un_vless_reality
+            exit 0
+            ;;
+        un3)
+            CLI_MODE=1
+            un_ss2022
+            exit 0
+            ;;
+        un4)
+            CLI_MODE=1
+            un_anytls
+            exit 0
+            ;;
+        un5)
+            CLI_MODE=1
+            un_hysteria2
+            exit 0
+            ;;
+        un6)
+            CLI_MODE=1
+            un_socks5
+            exit 0
+            ;;
+        unall)
             CLI_MODE=1
             uninstall_all
             exit 0
+            ;;
+        10)
+            CLI_MODE=1
+            install_dependencies
+            view_all_links
+            exit 0
+            ;;
+        *)
+            echo "无效选项: $ARG"
+            exit 1
             ;;
     esac
 fi
@@ -970,12 +1450,14 @@ setup_ntp_sync
 while true; do
     clear
     echo -e "${C_GREEN}==============================================${C_RESET}"
-    echo -e "${C_CYAN}   四合一代理脚本 (Four-in-one Script)   ${C_RESET}"
+    echo -e "${C_CYAN}   阿白的一键代理装脚本-自用   ${C_RESET}"
     echo -e "${C_GREEN}==============================================${C_RESET}"
     echo -e "1. ${C_YELLOW}VMess+TCP${C_RESET}"
     echo -e "2. ${C_YELLOW}VLESS+REALITY${C_RESET}"
     echo -e "3. ${C_YELLOW}SS-2022${C_RESET}"
-    echo -e "4. ${C_YELLOW}Socks5${C_RESET}"
+    echo -e "4. ${C_YELLOW}AnyTLS${C_RESET}"
+    echo -e "5. ${C_YELLOW}Hysteria2${C_RESET}"
+    echo -e "6. ${C_YELLOW}Socks5${C_RESET}"
     echo -e "----------------------------------------------"
     echo -e "8. ${C_GREEN}安装所有服务${C_RESET}"
     echo -e "9. ${C_RED}卸载所有服务${C_RESET}"
@@ -987,7 +1469,9 @@ while true; do
         1) module_vmess_tcp_menu ;;
         2) module_vmess_ws_menu ;;
         3) module_ssrust_menu ;;
-        4) module_socks5_menu ;;
+        4) module_anytls_menu ;;
+        5) module_hysteria2_menu ;;
+        6) module_socks5_menu ;;
         8) install_all_services ;;
         9) uninstall_all; pause_key ;;
         0) exit 0 ;;
