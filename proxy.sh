@@ -858,6 +858,53 @@ module_ssrust_menu() {
 }
 
 # ==============================================================================
+# 独立卸载函数 (命令行模式)
+# ==============================================================================
+
+un_vmess_tcp() {
+    echo "正在卸载 VMess+TCP..."
+    systemctl stop xray-vmesstcp 2>/dev/null
+    systemctl disable xray-vmesstcp 2>/dev/null
+    rm -f /etc/systemd/system/xray-vmesstcp.service
+    rm -f /usr/local/etc/xray/vmesstcp.json
+    rm -f /root/four-in-one/xray_vmess_tcp_link.txt
+    systemctl daemon-reload
+    echo -e "${C_GREEN}[✔] VMess+TCP 已卸载${C_RESET}"
+}
+
+un_vless_reality() {
+    echo "正在卸载 VLESS+REALITY..."
+    systemctl stop xray-vlessreality 2>/dev/null
+    systemctl disable xray-vlessreality 2>/dev/null
+    rm -f /etc/systemd/system/xray-vlessreality.service
+    rm -f /usr/local/etc/xray/vlessreality.json
+    rm -f /root/four-in-one/xray_vless_reality_link.txt
+    systemctl daemon-reload
+    echo -e "${C_GREEN}[✔] VLESS+REALITY 已卸载${C_RESET}"
+}
+
+un_ss2022() {
+    echo "正在卸载 SS-2022..."
+    systemctl stop xray-ss2022 2>/dev/null
+    systemctl disable xray-ss2022 2>/dev/null
+    rm -f /etc/systemd/system/xray-ss2022.service
+    rm -f /usr/local/etc/xray/ss2022.json
+    systemctl daemon-reload
+    echo -e "${C_GREEN}[✔] SS-2022 已卸载${C_RESET}"
+}
+
+un_socks5() {
+    echo "正在卸载 Socks5..."
+    systemctl stop xray-socks5.service 2>/dev/null
+    systemctl disable xray-socks5.service 2>/dev/null
+    rm -f /etc/systemd/system/xray-socks5.service
+    rm -f /usr/local/etc/xray/socks5.json
+    rm -rf /etc/xrayL
+    systemctl daemon-reload
+    echo -e "${C_GREEN}[✔] Socks5 已卸载${C_RESET}"
+}
+
+# ==============================================================================
 # 查看所有链接+状态 (命令行模式)
 # ==============================================================================
 
