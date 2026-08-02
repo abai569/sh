@@ -439,10 +439,10 @@ EOF
             fi
             debug_log "直连公网IPv4: $PUB_IPV4"
         else
-            # NAT：公网 IP 不在网卡上，监听 0.0.0.0，链接显示公网 IP
-            LISTEN_LIST+=("0.0.0.0")
+            # NAT：公网 IP 不在网卡上，监听 ::，链接显示公网 IP
+            LISTEN_LIST+=("::")
             DISPLAY_LIST+=("$PUB_IPV4")
-            debug_log "NAT公网IPv4: $PUB_IPV4 -> 监听 0.0.0.0"
+            debug_log "NAT公网IPv4: $PUB_IPV4 -> 监听 ::"
         fi
     fi
 
