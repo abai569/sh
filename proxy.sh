@@ -410,50 +410,68 @@ EOF
     # ====================
 
     # 重新获取IP列表
-    local IPV4_LIST=()
-    local IPV6_LIST=()
+    # LISTEN_LIST: 实际绑定地址（NAT机器用0.0.0.0，直连机器用IP本身）
+    # DISPLAY_LIST: 链接显示地址（始终用公网IP）
+    local LISTEN_LIST=()
+    local DISPLAY_LIST=()
 
-    debug_log "开始检测IPv4地址..."
-    while read ip; do
-        [[ "$ip" =~ ^(10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168|127\.) ]] && continue
-        if curl --interface "$ip" -s4 --max-time 3 ip.sb 2>/dev/null | grep -q "$ip"; then
-            IPV4_LIST+=("$ip")
-            debug_log "检测到IPv4: $ip"
+    # 1. 检测本地网卡上的直连公网 IPv4
+    debug_log "开始检测直连IPv4地址..."
+    local LOCAL_IPV4S=()
+    while read iface_ip; do
+        [[ "$iface_ip" =~ ^(10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168|127\.) ]] && continue
+        if curl --interface "$iface_ip" -s4 --max-time 3 ip.sb 2>/dev/null | grep -q "$iface_ip"; then
+            LOCAL_IPV4S+=("$iface_ip")
+            debug_log "检测到直连IPv4: $iface_ip"
         fi
     done < <(ip -4 addr show scope global | awk '{print $2}' | cut -d/ -f1)
 
-    # IPv4 NAT/Cloud
+    # 2. 检测公网 IP（含 NAT）
     debug_log "检测公网IPv4..."
     local PUB_IPV4
     PUB_IPV4=$(curl -s4 --max-time 3 ip.sb 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')
-    [ -n "$PUB_IPV4" ] && IPV4_LIST+=("$PUB_IPV4") && debug_log "检测到公网IPv4: $PUB_IPV4"
 
-    # IPv6
+    if [ -n "$PUB_IPV4" ]; then
+        if ip addr show | grep -qw "$PUB_IPV4"; then
+            # 直连：公网 IP 在网卡上，去重后加入
+            if ! printf '%s\n' "${LOCAL_IPV4S[@]}" | grep -qx "$PUB_IPV4"; then
+                LOCAL_IPV4S+=("$PUB_IPV4")
+            fi
+            debug_log "直连公网IPv4: $PUB_IPV4"
+        else
+            # NAT：公网 IP 不在网卡上，监听 0.0.0.0，链接显示公网 IP
+            LISTEN_LIST+=("0.0.0.0")
+            DISPLAY_LIST+=("$PUB_IPV4")
+            debug_log "NAT公网IPv4: $PUB_IPV4 -> 监听 0.0.0.0"
+        fi
+    fi
+
+    # 3. 直连 IPv4 加入列表
+    for ip in "${LOCAL_IPV4S[@]}"; do
+        LISTEN_LIST+=("$ip")
+        DISPLAY_LIST+=("$ip")
+    done
+
+    # 4. 检测 IPv6
     debug_log "开始检测IPv6地址..."
     while read ip; do
         [[ "$ip" =~ ^(fd|fe80) ]] && continue
         if curl --interface "$ip" -s6 --max-time 3 ip.sb 2>/dev/null | grep -q ':'; then
-            IPV6_LIST+=("$ip")
+            LISTEN_LIST+=("[$ip]")
+            DISPLAY_LIST+=("$ip")
             debug_log "检测到IPv6: $ip"
         fi
     done < <(ip -6 addr show scope global | awk '{print $2}' | cut -d/ -f1)
 
-    # 去重
-    IPV4_LIST=($(printf "%s\n" "${IPV4_LIST[@]}" | sort -u))
-    IPV6_LIST=($(printf "%s\n" "${IPV6_LIST[@]}" | sort -u))
-
     mkdir -p "$(dirname "$CONFIG_PATH")"
-    
-    # 生成 Xray JSON 配置
+
+    # 生成 Xray JSON 配置（用 LISTEN_LIST 绑定）
     local inbounds="[]"
     local index=0
-    local all_ips=("${IPV4_LIST[@]}" "${IPV6_LIST[@]}")
 
-    for ip in "${all_ips[@]}"; do
+    for i in "${!LISTEN_LIST[@]}"; do
+        local listen_addr="${LISTEN_LIST[$i]}"
         local PORT=$((START_PORT + index))
-        local listen_addr="$ip"
-        [[ "$ip" =~ ":" ]] && listen_addr="[$ip]"
-        
         if [ $index -eq 0 ]; then
             inbounds="[{\"listen\": \"$listen_addr\", \"port\": $PORT, \"protocol\": \"socks\", \"settings\": {\"auth\": \"password\", \"accounts\": [{\"user\": \"$USER\", \"pass\": \"$PASS\"}]}}]"
         else
@@ -470,28 +488,30 @@ EOF
 }
 EOF
     chmod 644 "$CONFIG_PATH"
-    
+
     systemctl restart xray-socks5.service >/dev/null 2>&1
-    sleep 2 # 等待服务重启
-    
-    # 仅在新安装时显示“安装完成”
+    sleep 2
+
+    # 仅在新安装时显示"安装完成"
     if [[ "$ALREADY_INSTALLED" -eq 0 ]]; then
         echo -e "${C_GREEN}[✔] Socks5 安装完成！${C_RESET}"
     fi
-    
+
     echo -e "${C_YELLOW}使用默认配置：${C_RESET}"
     echo "起始端口：$START_PORT 用户：$USER 密码：$PASS"
-    
-    if [ ${#all_ips[@]} -gt 0 ]; then
+
+    # 显示链接（用 DISPLAY_LIST 展示公网 IP）
+    if [ ${#DISPLAY_LIST[@]} -gt 0 ]; then
         echo -e "\n${C_GREEN}=== Socks5 节点链接 ===${C_RESET}"
         local idx=0
-        for ip in "${all_ips[@]}"; do
+        for i in "${!DISPLAY_LIST[@]}"; do
+            local display_ip="${DISPLAY_LIST[$i]}"
             local PORT=$((START_PORT + idx))
             idx=$((idx + 1))
-            if [[ "$ip" =~ ":" ]]; then
-                printf "socks5://%s:%s@[%s]:%s\n" "$USER" "$PASS" "$ip" "$PORT"
+            if [[ "$display_ip" =~ ":" ]]; then
+                printf "socks5://%s:%s@[%s]:%s\n" "$USER" "$PASS" "$display_ip" "$PORT"
             else
-                printf "socks5://%s:%s@%s:%s\n" "$USER" "$PASS" "$ip" "$PORT"
+                printf "socks5://%s:%s@%s:%s\n" "$USER" "$PASS" "$display_ip" "$PORT"
             fi
         done
         echo ""
