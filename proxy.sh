@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # 阿白的一键代理装脚本-自用
-# 四合一 - VMess/VLESS/SS-2022/Socks5
+# 五合一 - VMess/VLESS-REALITY/SS-2022/Socks5/VLESS-ENC
 # ==============================================================================
 
 # 全局颜色定义
@@ -555,6 +555,178 @@ module_socks5_menu() {
 }
 
 # ==============================================================================
+# 模块 5: VLESS-ENC - 函数定义（独立服务）
+# ==============================================================================
+
+m4_log_error() { echo -e "${C_RED}[✖] $1${C_RESET}"; }
+m4_log_success() { echo -e "${C_GREEN}[✔] $1${C_RESET}"; }
+
+m4_get_public_ip() {
+    get_public_ip
+}
+
+m4_restart_xray_vless_enc() {
+    mkdir -p /etc/systemd/system
+    cat <<'EOF' >/etc/systemd/system/xray-vlessenc.service
+[Unit]
+Description=Xray VLESS-ENC Service
+After=network.target nss-lookup.target
+
+[Service]
+User=nobody
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/vlessenc.json
+Restart=on-failure
+RestartPreventExitStatus=23
+LimitNPROC=10000
+LimitNOFILE=1000000
+RuntimeDirectory=xray-vlessenc
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable xray-vlessenc >/dev/null 2>&1
+    systemctl restart xray-vlessenc
+    sleep 2 # 等待服务启动
+    systemctl is-active --quiet xray-vlessenc
+}
+
+m4_install_vless_enc() {
+    local xray_config_path="/usr/local/etc/xray/vlessenc.json"
+    local link_file="/root/four-in-one/xray_vless_enc_link.txt"
+
+    # --- 默认配置 ---
+    local port=26203
+    local uuid="03c50ab2-80bf-40f2-947c-46b9e8f7b603"
+    local enc_mode="xorpub"
+    # ----------------
+
+    # 检测是否已安装
+    if [[ -f "$xray_config_path" ]] && systemctl is-active --quiet xray-vlessenc 2>/dev/null; then
+        echo -e "${C_YELLOW}检测到 VLESS-ENC 已安装，跳过安装步骤。${C_RESET}"
+        m4_view_info
+        return 0
+    fi
+
+    # 安装 Xray 核心
+    if ! install_xray_core; then
+        return 1
+    fi
+
+    # 检查 vlessenc 支持
+    if ! xray vlessenc >/tmp/vlessenc.out 2>/tmp/vlessenc.err; then
+        m4_log_error "当前 Xray 不支持 vlessenc，请升级 Xray-core"
+        return 1
+    fi
+
+    # 取 X25519 认证组（非 Post-Quantum），避免超长 ML-KEM-768 字段
+    local decryption encryption
+    decryption=$(sed -n '/Authentication: X25519/,/Authentication: ML-KEM/p' /tmp/vlessenc.out | grep '"decryption"' | head -1 | sed 's/.*"decryption": "\([^"]*\)".*/\1/')
+    encryption=$(sed -n '/Authentication: X25519/,/Authentication: ML-KEM/p' /tmp/vlessenc.out | grep '"encryption"' | head -1 | sed 's/.*"encryption": "\([^"]*\)".*/\1/')
+
+    if [ -z "$decryption" ] || [ -z "$encryption" ]; then
+        m4_log_error "无法从 vlessenc 输出解析 X25519 认证组"
+        return 1
+    fi
+
+    # 应用外观模式：native -> xorpub
+    decryption="${decryption/.native./.$enc_mode.}"
+    encryption="${encryption/.native./.$enc_mode.}"
+
+    echo "正在配置 VLESS-ENC..."
+    mkdir -p "$(dirname "$xray_config_path")"
+    cat > "$xray_config_path" <<EOF
+{
+    "log": {"loglevel": "warning"},
+    "inbounds": [{
+        "listen": "::",
+        "port": $port,
+        "protocol": "vless",
+        "settings": {
+            "clients": [{"id": "$uuid"}],
+            "decryption": "$decryption"
+        },
+        "streamSettings": {
+            "network": "tcp"
+        }
+    }],
+    "outbounds": [{"protocol": "freedom"}]
+}
+EOF
+    chmod 644 "$xray_config_path"
+
+    if m4_restart_xray_vless_enc; then
+        local ip
+        ip=$(m4_get_public_ip)
+        local link="vless://${uuid}@${ip}:${port}?encryption=${encryption}&type=tcp#VLESS-ENC-${enc_mode}"
+        mkdir -p /root/four-in-one
+        m4_log_success "VLESS-ENC 安装完成！"
+        echo -e "${C_YELLOW}默认端口: $port${C_RESET}"
+        echo -e "${C_YELLOW}加密模式: $enc_mode (X25519)${C_RESET}"
+        echo -e "\n${C_GREEN}=== VLESS-ENC 节点链接 ===${C_RESET}"
+        echo "$link"
+        echo ""
+        echo "$link" > "$link_file"
+    else
+        m4_log_error "启动失败，请检查日志 (journalctl -u xray-vlessenc)"
+    fi
+}
+
+m4_view_info() {
+    if [ -f /root/four-in-one/xray_vless_enc_link.txt ]; then
+        echo -e "${C_GREEN}上次生成的链接:${C_RESET}"
+        cat /root/four-in-one/xray_vless_enc_link.txt
+    else
+        m4_log_error "未找到链接文件，请重新安装或检查配置。"
+    fi
+}
+
+m4_uninstall_vless_enc() {
+    echo "正在卸载 VLESS-ENC..."
+    systemctl stop xray-vlessenc 2>/dev/null
+    systemctl disable xray-vlessenc 2>/dev/null
+    rm -f /etc/systemd/system/xray-vlessenc.service
+    rm -f /usr/local/etc/xray/vlessenc.json
+    rm -f /root/four-in-one/xray_vless_enc_link.txt
+    systemctl daemon-reload
+    m4_log_success "卸载完成"
+}
+
+module_vless_enc_menu() {
+    while true; do
+        clear
+        echo -e "${C_CYAN}=== VLESS-ENC ===${C_RESET}"
+        if systemctl is-active --quiet xray-vlessenc; then
+             echo -e "状态: ${C_GREEN}运行中${C_RESET}"
+        else
+             echo -e "状态: ${C_RED}未运行${C_RESET}"
+        fi
+        echo "1. 安装VLESS-ENC"
+        echo "2. 查看链接"
+        echo "3. 重启服务"
+        echo "4. 卸载服务"
+        echo "5. 查看日志"
+        echo "0. 返回主菜单"
+        echo "------------------------"
+        read -p "请选择: " choice
+        case $choice in
+            1) m4_install_vless_enc; pause_key ;;
+            2) m4_view_info; pause_key ;;
+            3) m4_restart_xray_vless_enc; m4_log_success "已重启"; pause_key ;;
+            4) m4_uninstall_vless_enc; pause_key ;;
+            5) journalctl -u xray-vlessenc -n 20 --no-pager; pause_key ;;
+            0) return ;;
+            *) echo "无效选项"; pause_key ;;
+        esac
+    done
+}
+
+# ==============================================================================
 # 模块 2: VLESS+REALITY - 函数定义（独立服务）
 # ==============================================================================
 
@@ -924,6 +1096,17 @@ un_socks5() {
     echo -e "${C_GREEN}[✔] Socks5 已卸载${C_RESET}"
 }
 
+un_vless_enc() {
+    echo "正在卸载 VLESS-ENC..."
+    systemctl stop xray-vlessenc 2>/dev/null
+    systemctl disable xray-vlessenc 2>/dev/null
+    rm -f /etc/systemd/system/xray-vlessenc.service
+    rm -f /usr/local/etc/xray/vlessenc.json
+    rm -f /root/four-in-one/xray_vless_enc_link.txt
+    systemctl daemon-reload
+    echo -e "${C_GREEN}[✔] VLESS-ENC 已卸载${C_RESET}"
+}
+
 # ==============================================================================
 # 查看所有链接+状态 (命令行模式)
 # ==============================================================================
@@ -1019,6 +1202,19 @@ view_all_links() {
         echo "链接: 未安装"
     fi
 
+    # VLESS-ENC
+    echo -e "\n${C_YELLOW}[5] VLESS-ENC${C_RESET}"
+    if systemctl is-active --quiet xray-vlessenc 2>/dev/null; then
+        echo -e "状态: ${C_GREEN}运行中${C_RESET}"
+    else
+        echo -e "状态: ${C_RED}未运行${C_RESET}"
+    fi
+    if [ -f /root/four-in-one/xray_vless_enc_link.txt ]; then
+        cat /root/four-in-one/xray_vless_enc_link.txt
+    else
+        echo "链接: 未安装"
+    fi
+
     echo -e "\n${C_GREEN}==============================================${C_RESET}"
 }
 
@@ -1033,6 +1229,7 @@ install_all_services() {
     m2_install_xray
     m3_install_ss
     m1_install_xray
+    m4_install_vless_enc
 
     echo -e "${C_GREEN}>>> 服务全部安装${C_RESET}"
     pause_key
@@ -1042,7 +1239,7 @@ install_all_services() {
 # 卸载所有服务逻辑
 # ==============================================================================
 uninstall_all() {
-    echo -e "${C_RED}警告: 即将卸载所有模块 (VMess+TCP, VLESS+REALITY, SS-2022, Socks5)!${C_RESET}"
+    echo -e "${C_RED}警告: 即将卸载所有模块 (VMess+TCP, VLESS+REALITY, SS-2022, Socks5, VLESS-ENC)!${C_RESET}"
     
     # 命令行模式跳过确认
     if [[ "$CLI_MODE" -eq 0 ]]; then
@@ -1054,13 +1251,14 @@ uninstall_all() {
     fi
 
     # 暴力停止所有可能的服务
-    systemctl stop xray-vmesstcp xray-vlessreality xray-socks5 xray-ss2022 2>/dev/null
-    systemctl disable xray-vmesstcp xray-vlessreality xray-socks5 xray-ss2022 2>/dev/null
+    systemctl stop xray-vmesstcp xray-vlessreality xray-socks5 xray-ss2022 xray-vlessenc 2>/dev/null
+    systemctl disable xray-vmesstcp xray-vlessreality xray-socks5 xray-ss2022 xray-vlessenc 2>/dev/null
     
     rm -f /etc/systemd/system/xray-vmesstcp.service
     rm -f /etc/systemd/system/xray-vlessreality.service
     rm -f /etc/systemd/system/xray-socks5.service
     rm -f /etc/systemd/system/xray-ss2022.service
+    rm -f /etc/systemd/system/xray-vlessenc.service
     systemctl daemon-reload
     
     # 直接手动删除Xray核心，最稳妥快速
@@ -1114,6 +1312,13 @@ if [[ -n "$1" ]]; then
             m1_install_xray
             exit 0
             ;;
+        in5)
+            CLI_MODE=1
+            install_dependencies
+            setup_ntp_sync
+            m4_install_vless_enc
+            exit 0
+            ;;
         inall)
             CLI_MODE=1
             install_dependencies
@@ -1139,6 +1344,11 @@ if [[ -n "$1" ]]; then
         un4)
             CLI_MODE=1
             un_socks5
+            exit 0
+            ;;
+        un5)
+            CLI_MODE=1
+            un_vless_enc
             exit 0
             ;;
         unall)
@@ -1173,6 +1383,7 @@ while true; do
     echo -e "2. ${C_YELLOW}VLESS+REALITY${C_RESET}"
     echo -e "3. ${C_YELLOW}SS-2022${C_RESET}"
     echo -e "4. ${C_YELLOW}Socks5${C_RESET}"
+    echo -e "5. ${C_YELLOW}VLESS-ENC${C_RESET}"
     echo -e "----------------------------------------------"
     echo -e "8. ${C_GREEN}安装所有服务${C_RESET}"
     echo -e "9. ${C_RED}卸载所有服务${C_RESET}"
@@ -1185,6 +1396,7 @@ while true; do
         2) module_vmess_ws_menu ;;
         3) module_ssrust_menu ;;
         4) module_socks5_menu ;;
+        5) module_vless_enc_menu ;;
         8) install_all_services ;;
         9) uninstall_all; pause_key ;;
         0) exit 0 ;;
