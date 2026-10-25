@@ -16,6 +16,9 @@ C_CYAN='\033[0;36m'
 # 全局变量：控制命令行模式
 CLI_MODE=0
 
+# 本轮是否已确认 Xray 核心安装失败（避免各模块重复下载）
+XRAY_CORE_INSTALL_FAILED=0
+
 # 调试模式
 DEBUG=${DEBUG:-0}
 
@@ -160,43 +163,58 @@ get_xray_version() {
 
 install_xray_core() {
     local xray_binary_path="/usr/local/bin/xray"
-    local proxy_prefix="https://ghfast.top/"
-    
+
     # 已安装则不重复安装核心
     if [[ -f "$xray_binary_path" ]]; then
         debug_log "Xray核心已存在，跳过安装"
         return 0
     fi
-    
-    # 通过代理下载官方安装脚本
-    local xray_install_script_url="${proxy_prefix}https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh"
-    local content
-    content=$(curl -sL --max-time 15 "$xray_install_script_url" 2>/dev/null)
-    
-    if [[ -z "$content" || ! "$content" =~ "install-release" ]]; then
-        echo -e "${C_RED}[✖] 无法通过加速镜像下载 Xray 安装脚本，请检查网络！${C_RESET}"
+
+    # 本轮已确认全部下载源失败，后续模块不再重复尝试
+    if [[ "$XRAY_CORE_INSTALL_FAILED" -eq 1 ]]; then
+        debug_log "本轮 Xray 核心安装已失败，跳过重复尝试"
         return 1
     fi
-    
-    echo -e "${C_BLUE}[*] 开始下载并安装 Xray 核心 (使用加速镜像)...${C_RESET}"
-    
-    # 利用字符串替换，把脚本内部的 github.com 链接全部换成带代理前缀的链接
-    content="${content//https:\/\/github.com/${proxy_prefix}https:\/\/github.com}"
-    content="${content//https:\/\/raw.githubusercontent.com/${proxy_prefix}https:\/\/raw.githubusercontent.com}"
-    
-    # 执行安装核心，暴露出输出信息方便排错
-    echo "$content" | bash -s -- install
-    
-    # 执行安装 Geo 数据
-    echo "$content" | bash -s -- install-geodata
-    
-    # 增加严格校验：到底装进去了没有
-    if [[ ! -f "$xray_binary_path" ]]; then
-        echo -e "${C_RED}[✖] Xray 核心安装失败！请检查上方报错日志。${C_RESET}"
-        return 1
-    fi
-    
-    return 0
+
+    local install_script="https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh"
+    # 直连优先，失败后依次尝试镜像
+    local prefixes=("" "https://gh-proxy.com/" "https://ghproxy.net/" "https://gh.llkk.cc/" "https://ghfast.top/")
+    local prefix source_label content
+
+    for prefix in "${prefixes[@]}"; do
+        if [[ -z "$prefix" ]]; then
+            source_label="直连 GitHub"
+        else
+            source_label="$prefix"
+        fi
+
+        debug_log "获取安装脚本: $source_label"
+        content=$(curl -sL --max-time 20 "${prefix}${install_script}" 2>/dev/null)
+        if [[ -z "$content" || ! "$content" =~ "install-release" ]]; then
+            echo -e "${C_YELLOW}[!] 获取安装脚本失败: $source_label${C_RESET}"
+            continue
+        fi
+
+        # 只有镜像模式才改写 GitHub 下载链接
+        if [[ -n "$prefix" ]]; then
+            content="${content//https:\/\/github.com/${prefix}https:\/\/github.com}"
+            content="${content//https:\/\/raw.githubusercontent.com/${prefix}https:\/\/raw.githubusercontent.com}"
+        fi
+
+        echo -e "${C_BLUE}[*] 开始下载并安装 Xray 核心 ($source_label)...${C_RESET}"
+        echo "$content" | bash -s -- install
+
+        if [[ -f "$xray_binary_path" ]]; then
+            echo -e "${C_GREEN}[✔] Xray 核心安装完成${C_RESET}"
+            return 0
+        fi
+
+        echo -e "${C_YELLOW}[!] $source_label 安装失败，尝试下一个下载源${C_RESET}"
+    done
+
+    XRAY_CORE_INSTALL_FAILED=1
+    echo -e "${C_RED}[✖] 所有下载源均失败，请检查网络后重试${C_RESET}"
+    return 1
 }
 
 # ==============================================================================
@@ -308,6 +326,7 @@ EOF
         echo "$link" > /root/four-in-one/xray_vmess_tcp_link.txt
     else
         m0_log_error "启动失败，请检查日志 (journalctl -u xray-vmesstcp)"
+        return 1
     fi
 }
 
@@ -492,6 +511,11 @@ EOF
     systemctl restart xray-socks5.service >/dev/null 2>&1
     sleep 2
 
+    if ! systemctl is-active --quiet xray-socks5.service 2>/dev/null; then
+        echo -e "${C_RED}[✖] Socks5 启动失败，请检查日志 (journalctl -u xray-socks5)${C_RESET}"
+        return 1
+    fi
+
     # 仅在新安装时显示"安装完成"
     if [[ "$ALREADY_INSTALLED" -eq 0 ]]; then
         echo -e "${C_GREEN}[✔] Socks5 安装完成！${C_RESET}"
@@ -674,6 +698,7 @@ EOF
         echo "$link" > "$link_file"
     else
         m4_log_error "启动失败，请检查日志 (journalctl -u xray-vlessenc)"
+        return 1
     fi
 }
 
@@ -846,6 +871,7 @@ EOF
         echo "$link" > /root/four-in-one/xray_vless_reality_link.txt
     else
         m2_log_error "启动失败，请检查日志 (journalctl -u xray-vlessreality)"
+        return 1
     fi
 }
 
@@ -1225,14 +1251,21 @@ install_all_services() {
     clear
     echo -e "${C_YELLOW}>>> 开始安装服务...${C_RESET}"
 
-    m0_install_vmess_tcp
-    m2_install_xray
-    m3_install_ss
-    m1_install_xray
-    m4_install_vless_enc
+    local failed=()
+    m0_install_vmess_tcp || failed+=("VMess+TCP")
+    m2_install_xray || failed+=("VLESS+REALITY")
+    m3_install_ss || failed+=("SS-2022")
+    m1_install_xray || failed+=("Socks5")
+    m4_install_vless_enc || failed+=("VLESS-ENC")
 
-    echo -e "${C_GREEN}>>> 服务全部安装${C_RESET}"
+    if [[ ${#failed[@]} -eq 0 ]]; then
+        echo -e "${C_GREEN}>>> 服务全部安装${C_RESET}"
+    else
+        echo -e "${C_RED}>>> 以下服务安装失败: ${failed[*]}${C_RESET}"
+    fi
     pause_key
+
+    [[ ${#failed[@]} -eq 0 ]]
 }
 
 # ==============================================================================
@@ -1289,42 +1322,42 @@ if [[ -n "$1" ]]; then
             install_dependencies
             setup_ntp_sync
             m0_install_vmess_tcp
-            exit 0
+            exit $?
             ;;
         in2)
             CLI_MODE=1
             install_dependencies
             setup_ntp_sync
             m2_install_xray
-            exit 0
+            exit $?
             ;;
         in3)
             CLI_MODE=1
             install_dependencies
             setup_ntp_sync
             m3_install_ss
-            exit 0
+            exit $?
             ;;
         in4)
             CLI_MODE=1
             install_dependencies
             setup_ntp_sync
             m1_install_xray
-            exit 0
+            exit $?
             ;;
         in5)
             CLI_MODE=1
             install_dependencies
             setup_ntp_sync
             m4_install_vless_enc
-            exit 0
+            exit $?
             ;;
         inall)
             CLI_MODE=1
             install_dependencies
             setup_ntp_sync
             install_all_services
-            exit 0
+            exit $?
             ;;
         un1)
             CLI_MODE=1
