@@ -236,7 +236,8 @@ Description=Xray VMess-TCP Service
 After=network.target nss-lookup.target
 
 [Service]
-User=nobody
+User=xray
+Group=xray
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
@@ -404,8 +405,12 @@ m1_install_xray() {
             echo -e "${C_RED}[✖] 核心安装失败${C_RESET}"
             return 1
         fi
+        echo "正在配置 Socks5..."
+    fi
+    # ====================
 
-        cat <<EOF >"$SERVICE_FILE"
+    # 始终重写服务文件，确保运行用户为 xray
+    cat <<EOF >"$SERVICE_FILE"
 [Unit]
 Description=Xray Socks5 Multi-IP Service
 After=network.target
@@ -413,21 +418,16 @@ After=network.target
 [Service]
 ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/socks5.json
 Restart=on-failure
-User=nobody
+User=xray
+Group=xray
 RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-        systemctl daemon-reload
-        systemctl enable xray-socks5.service >/dev/null 2>&1
-        
-        # 显示安装信息（仅新安装）
-        echo "正在配置 Socks5..."
-		
-    fi
-    # ====================
+    systemctl daemon-reload
+    systemctl enable xray-socks5.service >/dev/null 2>&1
 
     # 重新获取IP列表
     # LISTEN_LIST: 实际绑定地址（NAT机器用0.0.0.0，直连机器用IP本身）
@@ -599,7 +599,8 @@ Description=Xray VLESS-ENC Service
 After=network.target nss-lookup.target
 
 [Service]
-User=nobody
+User=xray
+Group=xray
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
@@ -773,7 +774,8 @@ Description=Xray VLESS-REALITY Service
 After=network.target nss-lookup.target
 
 [Service]
-User=nobody
+User=xray
+Group=xray
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
@@ -983,7 +985,8 @@ Description=Xray Shadowsocks-2022 Service
 After=network.target nss-lookup.target
 
 [Service]
-User=nobody
+User=xray
+Group=xray
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
