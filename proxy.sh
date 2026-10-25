@@ -292,6 +292,7 @@ m0_install_vmess_tcp() {
 
     echo "正在配置 VMess+TCP..."
     mkdir -p "$(dirname "$xray_config_path")"
+    chmod 755 "$(dirname "$xray_config_path")" 2>/dev/null || true
     cat > "$xray_config_path" <<EOF
 {
   "log": {"loglevel": "warning"},
@@ -483,6 +484,7 @@ EOF
     done < <(ip -6 addr show scope global | awk '{print $2}' | cut -d/ -f1)
 
     mkdir -p "$(dirname "$CONFIG_PATH")"
+    chmod 755 "$(dirname "$CONFIG_PATH")" 2>/dev/null || true
 
     # 生成 Xray JSON 配置（用 LISTEN_LIST 绑定）
     local inbounds="[]"
@@ -664,6 +666,7 @@ m4_install_vless_enc() {
 
     echo "正在配置 VLESS-ENC..."
     mkdir -p "$(dirname "$xray_config_path")"
+    chmod 755 "$(dirname "$xray_config_path")" 2>/dev/null || true
     cat > "$xray_config_path" <<EOF
 {
     "log": {"loglevel": "warning"},
@@ -827,6 +830,7 @@ m2_install_xray() {
 
     echo "正在配置 VLESS+REALITY..."
     mkdir -p "$(dirname "$xray_config_path")"
+    chmod 755 "$(dirname "$xray_config_path")" 2>/dev/null || true
     cat > "$xray_config_path" <<EOF
 {
     "log": {"loglevel": "warning"},
@@ -952,6 +956,7 @@ m3_install_ss() {
     
     echo "正在配置 SS-2022..."
     mkdir -p "$(dirname "$CONFIG_PATH")"
+    chmod 755 "$(dirname "$CONFIG_PATH")" 2>/dev/null || true
 
     # 写入配置
     cat <<EOF > "$CONFIG_PATH"
