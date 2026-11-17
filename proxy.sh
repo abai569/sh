@@ -798,7 +798,7 @@ m2_install_xray() {
     local xray_config_path="/usr/local/etc/xray/vlessreality.json"
 
     # --- 默认配置 ---
-    local port=443
+    local port=8443
     local uuid="03c50ab2-80bf-40f2-947c-46b9e8f7b603"
     local dest="tesla.com:443"
     local server_names='["tesla.com"]'
