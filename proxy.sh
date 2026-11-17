@@ -798,7 +798,7 @@ m2_install_xray() {
     local xray_config_path="/usr/local/etc/xray/vlessreality.json"
 
     # --- 默认配置 ---
-    local port=26201
+    local port=443
     local uuid="03c50ab2-80bf-40f2-947c-46b9e8f7b603"
     local dest="tesla.com:443"
     local server_names='["tesla.com"]'
@@ -807,18 +807,23 @@ m2_install_xray() {
     local public_key="$REALITY_PUBLIC_KEY"
     # ----------------
 
-    # 检测是否已安装
+    # 检测是否已安装且端口未变化
     if [[ -f "$xray_config_path" ]] && systemctl is-active --quiet xray-vlessreality 2>/dev/null; then
-        echo -e "${C_YELLOW}检测到 VLESS+REALITY 已安装，跳过安装步骤。${C_RESET}"
-        local ip
-        ip=$(m2_get_public_ip)
-        echo -e "${C_YELLOW}默认端口: $port${C_RESET}"
-        echo ""
-        echo -e "${C_GREEN}=== VLESS+REALITY 节点链接 ===${C_RESET}"
-        local link="vless://${uuid}@${ip}:${port}?security=reality&flow=xtls-rprx-vision&pbk=${public_key}&sni=tesla.com&sid=${short_id}&fp=chrome&type=tcp#VLESS-REALITY"
-        echo "$link"
-        echo ""
-        return 0
+        local current_port
+        current_port=$(grep -o '"port": *[0-9]*' "$xray_config_path" | head -1 | grep -o '[0-9]*')
+        if [[ "$current_port" == "$port" ]]; then
+            echo -e "${C_YELLOW}检测到 VLESS+REALITY 已安装，跳过安装步骤。${C_RESET}"
+            local ip
+            ip=$(m2_get_public_ip)
+            echo -e "${C_YELLOW}默认端口: $port${C_RESET}"
+            echo ""
+            echo -e "${C_GREEN}=== VLESS+REALITY 节点链接 ===${C_RESET}"
+            local link="vless://${uuid}@${ip}:${port}?security=reality&flow=xtls-rprx-vision&pbk=${public_key}&sni=tesla.com&sid=${short_id}&fp=chrome&type=tcp#VLESS-REALITY"
+            echo "$link"
+            echo ""
+            return 0
+        fi
+        echo -e "${C_YELLOW}检测到端口变更 (${current_port:-未知} -> $port)，正在重新配置...${C_RESET}"
     fi
 
     # 安装 Xray 核心
