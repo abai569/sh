@@ -236,8 +236,7 @@ Description=Xray VMess-TCP Service
 After=network.target nss-lookup.target
 
 [Service]
-User=xray
-Group=xray
+User=nobody
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
@@ -418,8 +417,7 @@ After=network.target
 [Service]
 ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/socks5.json
 Restart=on-failure
-User=xray
-Group=xray
+User=nobody
 RestartSec=3
 
 [Install]
@@ -599,8 +597,7 @@ Description=Xray VLESS-ENC Service
 After=network.target nss-lookup.target
 
 [Service]
-User=xray
-Group=xray
+User=nobody
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
@@ -774,8 +771,7 @@ Description=Xray VLESS-REALITY Service
 After=network.target nss-lookup.target
 
 [Service]
-User=xray
-Group=xray
+User=nobody
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
@@ -985,8 +981,7 @@ Description=Xray Shadowsocks-2022 Service
 After=network.target nss-lookup.target
 
 [Service]
-User=xray
-Group=xray
+User=nobody
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
