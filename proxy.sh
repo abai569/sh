@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # 阿白的一键代理装脚本-自用
-# 五合一 - VMess/VLESS-REALITY/SS-2022/Socks5/VLESS-ENC
+# 六合一 - VMess/VLESS-REALITY/SS-2022/Socks5/VLESS-ENC/Hysteria2
 # ==============================================================================
 
 # 全局颜色定义
@@ -753,6 +753,283 @@ module_vless_enc_menu() {
 }
 
 # ==============================================================================
+# Module 6: Hysteria2 - independent service
+# ==============================================================================
+
+m5_log_error() { echo -e "${C_RED}[✖] $1${C_RESET}"; }
+m5_log_success() { echo -e "${C_GREEN}[✔] $1${C_RESET}"; }
+
+m5_detect_arch() {
+    case "$(uname -m)" in
+        x86_64|amd64) echo "amd64" ;;
+        aarch64|arm64) echo "arm64" ;;
+        armv7l|armv7) echo "arm" ;;
+        i386|i686) echo "386" ;;
+        *) echo "" ;;
+    esac
+}
+
+m5_install_binary() {
+    local bin="/usr/local/bin/hysteria"
+    if [[ -x "$bin" ]]; then
+        return 0
+    fi
+    local arch asset prefix url tmp
+    arch=$(m5_detect_arch)
+    if [[ -z "$arch" ]]; then
+        m5_log_error "Unsupported architecture: $(uname -m)"
+        return 1
+    fi
+    asset="hysteria-linux-${arch}"
+    local prefixes=("" "https://gh-proxy.com/" "https://ghproxy.net/" "https://gh.llkk.cc/" "https://ghfast.top/")
+    tmp=$(mktemp)
+    for prefix in "${prefixes[@]}"; do
+        url="${prefix}https://github.com/apernet/hysteria/releases/latest/download/${asset}"
+        debug_log "Downloading Hysteria2: $url"
+        if curl -fL --connect-timeout 10 --max-time 120 -o "$tmp" "$url" 2>/dev/null; then
+            install -m 755 "$tmp" "$bin"
+            rm -f "$tmp"
+            return 0
+        fi
+    done
+    rm -f "$tmp"
+    m5_log_error "Failed to download Hysteria2 binary"
+    return 1
+}
+
+m5_ensure_self_signed_cert() {
+    local dir="/etc/hysteria"
+    local sni="${HY2_SNI:-www.bing.com}"
+    mkdir -p "$dir"
+    if [[ -f "$dir/cert.pem" && -f "$dir/key.pem" ]]; then
+        return 0
+    fi
+    echo "[*] Generating self-signed certificate..."
+    if ! openssl ecparam -genkey -name prime256v1 -out "$dir/key.pem" 2>/dev/null; then
+        m5_log_error "Failed to generate private key"
+        return 1
+    fi
+    if ! openssl req -new -x509 -days 3650 -key "$dir/key.pem" -out "$dir/cert.pem" -subj "/CN=$sni" 2>/dev/null; then
+        m5_log_error "Failed to generate certificate"
+        return 1
+    fi
+    chmod 600 "$dir/key.pem"
+    chmod 644 "$dir/cert.pem"
+    return 0
+}
+
+m5_issue_domain_cert() {
+    local domain="$1"
+    local email="${HY2_EMAIL:-admin@${domain}}"
+    local acme_home="${HOME}/.acme.sh"
+    local rc=0
+    if [[ ! -x "$acme_home/acme.sh" ]]; then
+        echo "[*] Installing acme.sh..."
+        if ! curl -fsSL https://get.acme.sh | sh -s "email=$email" >/dev/null 2>&1; then
+            m5_log_error "Failed to install acme.sh"
+            return 1
+        fi
+    fi
+    "$acme_home/acme.sh" --set-default-ca --server letsencrypt >/dev/null 2>&1 || true
+    "$acme_home/acme.sh" --issue -d "$domain" --standalone --keylength ec-256 || rc=$?
+    if [[ $rc -ne 0 && $rc -ne 2 ]]; then
+        m5_log_error "Certificate issuance failed (check DNS and TCP 80)"
+        return 1
+    fi
+    if ! "$acme_home/acme.sh" --install-cert -d "$domain" --ecc \
+        --key-file /etc/hysteria/key.pem \
+        --fullchain-file /etc/hysteria/cert.pem \
+        --reloadcmd "systemctl restart hysteria-server" >/dev/null 2>&1; then
+        m5_log_error "Failed to install certificate"
+        return 1
+    fi
+    chmod 600 /etc/hysteria/key.pem
+    chmod 644 /etc/hysteria/cert.pem
+    return 0
+}
+
+m5_write_config() {
+    local password="$1"
+    local port="$2"
+    cat > /etc/hysteria/config.yaml <<EOF
+listen: :${port}
+
+tls:
+  cert: /etc/hysteria/cert.pem
+  key: /etc/hysteria/key.pem
+
+auth:
+  type: password
+  password: ${password}
+
+masquerade:
+  type: proxy
+  proxy:
+    url: https://www.bing.com/
+    rewriteHost: true
+EOF
+    chmod 600 /etc/hysteria/config.yaml
+}
+
+m5_open_firewall() {
+    local port="$1"
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+        ufw allow "${port}/udp" >/dev/null 2>&1 || true
+    fi
+    if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+        firewall-cmd --permanent --add-port="${port}/udp" >/dev/null 2>&1 || true
+        firewall-cmd --reload >/dev/null 2>&1 || true
+    fi
+}
+
+m5_enable_bbr() {
+    if ! grep -q "net.ipv4.tcp_congestion_control=bbr" /etc/sysctl.conf 2>/dev/null; then
+        echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+        echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+        sysctl -p >/dev/null 2>&1 || true
+    fi
+}
+
+m5_restart_hysteria2() {
+    cat > /etc/systemd/system/hysteria-server.service <<EOF
+[Unit]
+Description=Hysteria2 Server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/hysteria server -c /etc/hysteria/config.yaml
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=1048576
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable hysteria-server >/dev/null 2>&1
+    systemctl restart hysteria-server
+    sleep 2
+    systemctl is-active --quiet hysteria-server
+}
+
+m5_install_hysteria2() {
+    local port="${HY2_PORT:-443}"
+    local domain="${HY2_DOMAIN:-}"
+    local link_file="/root/four-in-one/hysteria2_link.txt"
+
+    if [[ -f /etc/systemd/system/hysteria-server.service ]] && systemctl is-active --quiet hysteria-server 2>/dev/null; then
+        echo -e "${C_YELLOW}Hysteria2 already installed, skipping.${C_RESET}"
+        m5_view_info
+        return 0
+    fi
+
+    if ! m5_install_binary; then
+        return 1
+    fi
+
+    mkdir -p /etc/hysteria
+
+    local host sni insecure=""
+    if [[ -n "$domain" ]]; then
+        if ! m5_issue_domain_cert "$domain"; then
+            return 1
+        fi
+        host="$domain"
+        sni="$domain"
+    else
+        if ! m5_ensure_self_signed_cert; then
+            return 1
+        fi
+        host=$(get_public_ip)
+        [[ -z "$host" ]] && host="YOUR_SERVER_IP"
+        sni="${HY2_SNI:-www.bing.com}"
+        insecure="&insecure=1"
+    fi
+
+    if ss -lun 2>/dev/null | awk '{print $5}' | grep -q ":${port}$"; then
+        m5_log_error "UDP port ${port} is already in use"
+        return 1
+    fi
+
+    local password
+    password=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 24)
+    m5_write_config "$password" "$port"
+    m5_enable_bbr
+    m5_open_firewall "$port"
+
+    if ! m5_restart_hysteria2; then
+        m5_log_error "Failed to start. Check: journalctl -u hysteria-server -n 50 --no-pager"
+        return 1
+    fi
+
+    local link="hysteria2://${password}@${host}:${port}/?sni=${sni}${insecure}#Hysteria2"
+    mkdir -p /root/four-in-one
+    echo "$link" > "$link_file"
+
+    if [[ -z "$domain" ]]; then
+        m5_log_success "Hysteria2 installed (self-signed certificate)"
+    else
+        m5_log_success "Hysteria2 installed (domain certificate)"
+    fi
+    echo -e "${C_YELLOW}Port (UDP): $port${C_RESET}"
+    echo -e "${C_YELLOW}SNI: $sni${C_RESET}"
+    echo -e "\n${C_GREEN}=== Hysteria2 node link ===${C_RESET}"
+    echo "$link"
+    echo ""
+}
+
+m5_view_info() {
+    if [ -f /root/four-in-one/hysteria2_link.txt ]; then
+        cat /root/four-in-one/hysteria2_link.txt
+    else
+        m5_log_error "Hysteria2 link not found, install first"
+    fi
+}
+
+m5_uninstall_hysteria2() {
+    echo "Uninstalling Hysteria2..."
+    systemctl stop hysteria-server 2>/dev/null
+    systemctl disable hysteria-server 2>/dev/null
+    rm -f /etc/systemd/system/hysteria-server.service
+    rm -f /usr/local/bin/hysteria
+    rm -rf /etc/hysteria
+    rm -f /root/four-in-one/hysteria2_link.txt
+    systemctl daemon-reload
+    m5_log_success "Hysteria2 removed"
+}
+
+module_hysteria2_menu() {
+    while true; do
+        clear
+        echo -e "${C_CYAN}=== Hysteria2 ===${C_RESET}"
+        if systemctl is-active --quiet hysteria-server; then
+            echo -e "Status: ${C_GREEN}running${C_RESET}"
+        else
+            echo -e "Status: ${C_RED}stopped${C_RESET}"
+        fi
+        echo "1. Install Hysteria2"
+        echo "2. Show link"
+        echo "3. Restart service"
+        echo "4. Uninstall service"
+        echo "5. Show log"
+        echo "0. Back"
+        echo "------------------------"
+        read -p "Choose: " choice
+        case $choice in
+            1) m5_install_hysteria2; pause_key ;;
+            2) m5_view_info; pause_key ;;
+            3) m5_restart_hysteria2 && m5_log_success "Restarted"; pause_key ;;
+            4) m5_uninstall_hysteria2; pause_key ;;
+            5) journalctl -u hysteria-server -n 20 --no-pager; pause_key ;;
+            0) return ;;
+            *) echo "Invalid option"; pause_key ;;
+        esac
+    done
+}
+
+# ==============================================================================
 # 模块 2: VLESS+REALITY - 函数定义（独立服务）
 # ==============================================================================
 
@@ -1141,6 +1418,18 @@ un_vless_enc() {
     echo -e "${C_GREEN}[✔] VLESS-ENC 已卸载${C_RESET}"
 }
 
+un_hysteria2() {
+    echo "Uninstalling Hysteria2..."
+    systemctl stop hysteria-server 2>/dev/null
+    systemctl disable hysteria-server 2>/dev/null
+    rm -f /etc/systemd/system/hysteria-server.service
+    rm -f /usr/local/bin/hysteria
+    rm -rf /etc/hysteria
+    rm -f /root/four-in-one/hysteria2_link.txt
+    systemctl daemon-reload
+    echo -e "${C_GREEN}[✔] Hysteria2 removed${C_RESET}"
+}
+
 # ==============================================================================
 # 查看所有链接+状态 (命令行模式)
 # ==============================================================================
@@ -1249,6 +1538,19 @@ view_all_links() {
         echo "链接: 未安装"
     fi
 
+    # Hysteria2
+    echo -e "\n${C_YELLOW}[6] Hysteria2${C_RESET}"
+    if systemctl is-active --quiet hysteria-server 2>/dev/null; then
+        echo -e "状态: ${C_GREEN}运行中${C_RESET}"
+    else
+        echo -e "状态: ${C_RED}未运行${C_RESET}"
+    fi
+    if [ -f /root/four-in-one/hysteria2_link.txt ]; then
+        cat /root/four-in-one/hysteria2_link.txt
+    else
+        echo "链接: 未安装"
+    fi
+
     echo -e "\n${C_GREEN}==============================================${C_RESET}"
 }
 
@@ -1265,6 +1567,7 @@ install_all_services() {
     m3_install_ss || failed+=("SS-2022")
     m1_install_xray || failed+=("Socks5")
     m4_install_vless_enc || failed+=("VLESS-ENC")
+    m5_install_hysteria2 || failed+=("Hysteria2")
 
     if [[ ${#failed[@]} -eq 0 ]]; then
         echo -e "${C_GREEN}>>> 服务全部安装${C_RESET}"
@@ -1280,7 +1583,7 @@ install_all_services() {
 # 卸载所有服务逻辑
 # ==============================================================================
 uninstall_all() {
-    echo -e "${C_RED}警告: 即将卸载所有模块 (VMess+TCP, VLESS+REALITY, SS-2022, Socks5, VLESS-ENC)!${C_RESET}"
+    echo -e "${C_RED}警告: 即将卸载所有模块 (VMess+TCP, VLESS+REALITY, SS-2022, Socks5, VLESS-ENC, Hysteria2)!${C_RESET}"
     
     # 命令行模式跳过确认
     if [[ "$CLI_MODE" -eq 0 ]]; then
@@ -1292,14 +1595,15 @@ uninstall_all() {
     fi
 
     # 暴力停止所有可能的服务
-    systemctl stop xray-vmesstcp xray-vlessreality xray-socks5 xray-ss2022 xray-vlessenc 2>/dev/null
-    systemctl disable xray-vmesstcp xray-vlessreality xray-socks5 xray-ss2022 xray-vlessenc 2>/dev/null
+    systemctl stop xray-vmesstcp xray-vlessreality xray-socks5 xray-ss2022 xray-vlessenc hysteria-server 2>/dev/null
+    systemctl disable xray-vmesstcp xray-vlessreality xray-socks5 xray-ss2022 xray-vlessenc hysteria-server 2>/dev/null
     
     rm -f /etc/systemd/system/xray-vmesstcp.service
     rm -f /etc/systemd/system/xray-vlessreality.service
     rm -f /etc/systemd/system/xray-socks5.service
     rm -f /etc/systemd/system/xray-ss2022.service
     rm -f /etc/systemd/system/xray-vlessenc.service
+    rm -f /etc/systemd/system/hysteria-server.service
     systemctl daemon-reload
     
     # 直接手动删除Xray核心，最稳妥快速
@@ -1309,7 +1613,11 @@ uninstall_all() {
     
     rm -rf /etc/xrayL
     rm -rf /root/four-in-one
-    
+
+    # Hysteria2
+    rm -f /usr/local/bin/hysteria
+    rm -rf /etc/hysteria
+
     echo -e "${C_GREEN}所有组件已清理完毕。${C_RESET}"
 }
 
@@ -1360,6 +1668,13 @@ if [[ -n "$1" ]]; then
             m4_install_vless_enc
             exit $?
             ;;
+        in6)
+            CLI_MODE=1
+            install_dependencies
+            setup_ntp_sync
+            m5_install_hysteria2
+            exit $?
+            ;;
         inall)
             CLI_MODE=1
             install_dependencies
@@ -1390,6 +1705,11 @@ if [[ -n "$1" ]]; then
         un5)
             CLI_MODE=1
             un_vless_enc
+            exit 0
+            ;;
+        un6)
+            CLI_MODE=1
+            un_hysteria2
             exit 0
             ;;
         unall)
@@ -1425,6 +1745,7 @@ while true; do
     echo -e "3. ${C_YELLOW}SS-2022${C_RESET}"
     echo -e "4. ${C_YELLOW}Socks5${C_RESET}"
     echo -e "5. ${C_YELLOW}VLESS-ENC${C_RESET}"
+    echo -e "6. ${C_YELLOW}Hysteria2${C_RESET}"
     echo -e "----------------------------------------------"
     echo -e "8. ${C_GREEN}安装所有服务${C_RESET}"
     echo -e "9. ${C_RED}卸载所有服务${C_RESET}"
@@ -1438,6 +1759,7 @@ while true; do
         3) module_ssrust_menu ;;
         4) module_socks5_menu ;;
         5) module_vless_enc_menu ;;
+        6) module_hysteria2_menu ;;
         8) install_all_services ;;
         9) uninstall_all; pause_key ;;
         0) exit 0 ;;
