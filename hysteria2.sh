@@ -11,7 +11,7 @@ HY2_PORT="${HY2_PORT:-443}"
 # Example: HY2_DOMAIN=hy.example.com HY2_EMAIL=you@example.com bash hysteria2.sh install
 HY2_DOMAIN="${HY2_DOMAIN:-}"
 HY2_EMAIL="${HY2_EMAIL:-}"
-HY2_SNI="${HY2_SNI:-www.bing.com}"
+HY2_SNI="${HY2_SNI:-bing.com}"
 ACME_HOME="${HOME}/.acme.sh"
 
 log() { echo -e "[*] $*"; }
@@ -150,7 +150,7 @@ auth:
 masquerade:
   type: proxy
   proxy:
-    url: https://www.bing.com/
+    url: https://bing.com/
     rewriteHost: true
 EOF
   chmod 600 "$HY2_CONFIG"

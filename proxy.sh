@@ -799,7 +799,7 @@ m5_install_binary() {
 
 m5_ensure_self_signed_cert() {
     local dir="/etc/hysteria"
-    local sni="${HY2_SNI:-www.bing.com}"
+    local sni="${HY2_SNI:-bing.com}"
     mkdir -p "$dir"
     if [[ -f "$dir/cert.pem" && -f "$dir/key.pem" ]]; then
         return 0
@@ -865,7 +865,7 @@ auth:
 masquerade:
   type: proxy
   proxy:
-    url: https://www.bing.com/
+    url: https://bing.com/
     rewriteHost: true
 EOF
     chmod 600 /etc/hysteria/config.yaml
@@ -944,7 +944,7 @@ m5_install_hysteria2() {
         fi
         host=$(get_public_ip)
         [[ -z "$host" ]] && host="YOUR_SERVER_IP"
-        sni="${HY2_SNI:-www.bing.com}"
+        sni="${HY2_SNI:-bing.com}"
         insecure="&insecure=1"
     fi
 
